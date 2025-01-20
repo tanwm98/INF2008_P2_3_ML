@@ -69,8 +69,6 @@ def fetch_gold_data(start_date, end_date):
     #    lambda x: 1 if x > 0.5 else (-1 if x < -0.5 else 0)
     #)
     
-    gold_data['Next_Day_Close'] = gold_data['Close'].shift(-1)
-    
     return gold_data
 
 
@@ -106,4 +104,4 @@ if __name__ == "__main__":
         
         # Save to a CSV file or display
         print(main_df.head())
-        main_df.to_csv("gold_details.csv", index=True)
+        main_df.to_csv("gold_now.csv", index=True)

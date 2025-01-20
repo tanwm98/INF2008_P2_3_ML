@@ -58,6 +58,15 @@ def fetch_gold_data(start_date, end_date):
     #gold_data['Open_Close_Change_%'] = (
     #    gold_data['Open_Close_Change'].astype(float) / gold_data['Open'].astype(float)
     #) * 100
+
+    gold_data['Day_Low_High_Change_%'] = (
+        (gold_data['High'] - gold_data['Low']) / gold_data ['Low'] * 100 
+    )
+
+    gold_data['Open_Close_Change_%'] = (
+        (gold_data['Close'] - gold_data['Open']) / gold_data['Open'] * 100 
+    )
+
     gold_data['5_Day_MA'] = gold_data['Close'].rolling(window=5).mean()
     gold_data['10_Day_MA'] = gold_data['Close'].rolling(window=10).mean()
     gold_data['20_Day_MA'] = gold_data['Close'].rolling(window=20).mean()
@@ -65,9 +74,9 @@ def fetch_gold_data(start_date, end_date):
     gold_data['RSI'] = calculate_rsi(gold_data['Close'])
     
     # Calculate trend: 1 for >0.5% up, 0 for -0.5% to 0.5%, -1 for <-0.5%
-    #gold_data['Trend'] = gold_data['Open_Close_Change_%'].apply(
-    #    lambda x: 1 if x > 0.5 else (-1 if x < -0.5 else 0)
-    #)
+    gold_data['Trend'] = gold_data['Open_Close_Change_%'].apply(
+       lambda x: 1 if x > 0.5 else (-1 if x < -0.5 else 0)
+    )
     
     gold_data['Next_Day_Close'] = gold_data['Close'].shift(-1)
     
@@ -90,12 +99,12 @@ if __name__ == "__main__":
         # Merge main data with detailed gold data
         detailed_gold_columns = [
             'Open', 'High', 'Low', 'Close', 'Volume', 
-            #'Day_Low_High_Change',
+            'Day_Low_High_Change',
             'Open_Close_Change', 
-            #'Day_Low_High_Change_%', 
-            #'Open_Close_Change_%',
+            'Day_Low_High_Change_%', 
+            'Open_Close_Change_%',
             '5_Day_MA', '10_Day_MA', '20_Day_MA', '50_Day_MA', 'RSI', 
-            #'Trend',
+            'Trend',
             'Next_Day_Close'
         ]
         for col in detailed_gold_columns:

@@ -75,7 +75,7 @@ def fetch_gold_data(start_date, end_date):
 
 if __name__ == "__main__":
     # Specify the date range
-    start_date = "2020-01-01"
+    start_date = datetime.now().strftime('%Y-%m-%d')
     end_date = datetime.now().strftime('%Y-%m-%d')
     
     # Fetch the main data

@@ -19,7 +19,7 @@ def load_data(file_path):
     df = pd.read_csv(file_path)
 
     # Select only the specified columns
-    selected_columns = ['Date', 'Gold', 'Silver', 'Crude Oil', 'DXY', 'S&P500']
+    selected_columns = ['Date', 'Gold','Silver','S&P500','cpi','rates']
     df = df[selected_columns].copy()
 
     # Convert Date to datetime
@@ -34,11 +34,11 @@ def load_data(file_path):
 def prepare_data(df):
     # Create features (X) and target (y)
     # Using today's values of Silver, Crude Oil, DXY, S&P500 to predict Gold
-    X = df[['Silver', 'Crude Oil', 'DXY', 'S&P500']].values
+    X = df[['Silver','S&P500','cpi','rates']].values
     y = df['Gold'].values
 
     # Split the data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
     # Scale the features
     scaler = StandardScaler()
@@ -76,7 +76,7 @@ def evaluate_model(model, X_test, y_test, y_pred, model_name):
 
     # Feature importance for linear models
     if hasattr(model, 'coef_'):
-        feature_names = ['Silver', 'Crude Oil', 'DXY', 'S&P500']
+        feature_names = ['Silver','S&P500','cpi','rates']
         coef = model.coef_
         if len(coef.shape) > 1:
             coef = coef.ravel()
@@ -131,7 +131,7 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
 def main():
     # Load and prepare data
     print("Loading data...")
-    df = load_data('dataset/gold_details.csv')
+    df = load_data('dataset/new_gold_details.csv')
 
     print("\nDataset shape:", df.shape)
     print("\nFirst few rows of selected columns:")

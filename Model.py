@@ -1,6 +1,6 @@
 import warnings
 import matplotlib
-matplotlib.use('TkAgg')  # Set the backend to Agg
+matplotlib.use('TkAgg')  # Set the backend to TkAgg
 warnings.filterwarnings('ignore')
 
 import pandas as pd
@@ -10,37 +10,65 @@ import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
-from sklearn.linear_model import LinearRegression, Lasso, Ridge, ElasticNet
-from sklearn.svm import SVR
+from sklearn.linear_model import LinearRegression
 
 
 def load_data(file_path):
     # Read the dataset
     df = pd.read_csv(file_path)
 
-    # Select only the specified columns
-    selected_columns = ['Date', 'Gold','Silver','S&P500','cpi','rates']
+    # Select columns from the new CSV
+    selected_columns = ['Date', 'Gold', 'Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
     df = df[selected_columns].copy()
 
-    # Convert Date to datetime
-    df['Date'] = pd.to_datetime(df['Date'])
+    # Convert Date to datetime (DD/MM/YYYY in your CSV)
+    df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y')
 
-    # Handle any missing values
-    df = df.dropna()
+    # Handle missing values
+    df.dropna(inplace=True)
+
+    # Optional: If you want to predict today's Gold using *yesterday's* features, you can shift:
+    # df['Silver'] = df['Silver'].shift(1)
+    # df['Crude Oil'] = df['Crude Oil'].shift(1)
+    # df['DXY'] = df['DXY'].shift(1)
+    # df['S&P500'] = df['S&P500'].shift(1)
+    # df['cpi'] = df['cpi'].shift(1)
+    # df['rates'] = df['rates'].shift(1)
+    # df.dropna(inplace=True)
 
     return df
 
 
-def prepare_data(df):
-    # Create features (X) and target (y)
-    # Using today's values of Silver, Crude Oil, DXY, S&P500 to predict Gold
-    X = df[['Silver','S&P500','cpi','rates']].values
-    y = df['Gold'].values
+def time_based_split(df, train_ratio=0.7):
+    """
+    Splits the DataFrame into train/test sets based on chronological order.
+    train_ratio: fraction of data used for training.
+    """
+    df_sorted = df.sort_values('Date')
+    cutoff = int(len(df_sorted) * train_ratio)
+    train_df = df_sorted.iloc[:cutoff]
+    test_df = df_sorted.iloc[cutoff:]
+    return train_df, test_df
 
-    # Split the data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Scale the features
+def prepare_data(df, train_ratio=0.7):
+    """
+    Performs a time-based split, then separates features (X) and target (y).
+    """
+    # Split into train/test by date
+    train_df, test_df = time_based_split(df, train_ratio=train_ratio)
+
+    # Features and target
+    features = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
+    target = 'Gold'
+
+    X_train = train_df[features].values
+    y_train = train_df[target].values
+
+    X_test = test_df[features].values
+    y_test = test_df[target].values
+
+    # Scale features
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
@@ -49,10 +77,9 @@ def prepare_data(df):
 
 
 def create_correlation_heatmap(df):
-    # Create correlation matrix
+    # Create correlation matrix using numeric columns (drop Date)
     correlation = df.drop('Date', axis=1).corr()
 
-    # Create heatmap
     plt.figure(figsize=(10, 8))
     sns.heatmap(correlation, annot=True, cmap='RdBu_r', vmin=-1, vmax=1, fmt='.2f')
     plt.title('Correlation Heatmap of Gold Price Features')
@@ -76,7 +103,7 @@ def evaluate_model(model, X_test, y_test, y_pred, model_name):
 
     # Feature importance for linear models
     if hasattr(model, 'coef_'):
-        feature_names = ['Silver','S&P500','cpi','rates']
+        feature_names = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
         coef = model.coef_
         if len(coef.shape) > 1:
             coef = coef.ravel()
@@ -85,35 +112,34 @@ def evaluate_model(model, X_test, y_test, y_pred, model_name):
             'Feature': feature_names,
             'Importance': np.abs(coef)
         })
-        importances = importances.sort_values('Importance', ascending=False)
+        importances.sort_values('Importance', ascending=False, inplace=True)
+
         print("\nFeature Importance:")
         print(importances)
 
-        # Visualize feature importance
         plt.figure(figsize=(10, 6))
         sns.barplot(x='Importance', y='Feature', data=importances)
         plt.title(f'Feature Importance - {model_name}')
         plt.tight_layout()
         plt.show()
 
+
 def train_and_evaluate_models(X_train, X_test, y_train, y_test):
-    # Dictionary to store models
     models = {
         'Linear Regression': LinearRegression(),
+        # You could add more models here, e.g.:
+        # 'Lasso': Lasso(alpha=0.1),
+        # 'Ridge': Ridge(alpha=1.0),
+        # 'ElasticNet': ElasticNet(alpha=0.1),
+        # 'SVR': SVR(kernel='rbf')
     }
 
-    # Dictionary to store results
     results = {}
 
-    # Train and evaluate each model
     for name, model in models.items():
-        # Train the model
         model.fit(X_train, y_train)
-
-        # Make predictions
         y_pred = model.predict(X_test)
 
-        # Evaluate and store results
         results[name] = {
             'R2': r2_score(y_test, y_pred),
             'EVS': explained_variance_score(y_test, y_pred),
@@ -122,28 +148,26 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
             'RMSE': np.sqrt(mean_squared_error(y_test, y_pred))
         }
 
-        # Print detailed results
         evaluate_model(model, X_test, y_test, y_pred, name)
 
     return results
 
 
 def main():
-    # Load and prepare data
+    # Load data
     print("Loading data...")
-    df = load_data('dataset/new_gold_details.csv')
-
-    print("\nDataset shape:", df.shape)
-    print("\nFirst few rows of selected columns:")
+    df = load_data('dataset/combined_data_v2.csv')
+    print(f"\nDataset shape: {df.shape}")
+    print("\nFirst few rows:")
     print(df.head())
 
-    # Create correlation heatmap
+    # Correlation heatmap
     print("\nGenerating correlation heatmap...")
     create_correlation_heatmap(df)
 
     # Prepare data for modeling
-    print("\nPreparing data for modeling...")
-    X_train, X_test, y_train, y_test = prepare_data(df)
+    print("\nPreparing data for modeling with a time-based split (70% train / 30% test)...")
+    X_train, X_test, y_train, y_test = prepare_data(df, train_ratio=0.7)
 
     # Train and evaluate models
     print("\nTraining and evaluating models...")

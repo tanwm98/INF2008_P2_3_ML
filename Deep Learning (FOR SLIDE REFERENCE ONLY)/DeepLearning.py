@@ -467,7 +467,7 @@ def predict_future(model, df, feature_scaler, target_scaler, num_days=7):
 def main():
     # Load data
     print("Loading data...")
-    df = load_data('dataset/combined_dataset.csv')
+    df = load_data('../dataset/combined_dataset.csv')
     print(f"\nDataset shape: {df.shape}")
 
     # Correlation heatmap

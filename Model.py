@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
 from sklearn.linear_model import LinearRegression
@@ -26,15 +25,6 @@ def load_data(file_path):
 
     # Handle missing values
     df.dropna(inplace=True)
-
-    # Optional: If you want to predict today's Gold using *yesterday's* features, you can shift:
-    # df['Silver'] = df['Silver'].shift(1)
-    # df['Crude Oil'] = df['Crude Oil'].shift(1)
-    # df['DXY'] = df['DXY'].shift(1)
-    # df['S&P500'] = df['S&P500'].shift(1)
-    # df['cpi'] = df['cpi'].shift(1)
-    # df['rates'] = df['rates'].shift(1)
-    # df.dropna(inplace=True)
 
     return df
 
@@ -87,6 +77,27 @@ def create_correlation_heatmap(df):
     plt.show()
 
 
+def plot_predictions_vs_actual(y_test, y_pred, model_name):
+    """
+    Create a scatter plot comparing actual vs predicted values with a diagonal reference line.
+    
+    Parameters:
+    - y_test: Numpy array of actual gold prices
+    - y_pred: Numpy array of predicted gold prices
+    - model_name: String name of the model for the plot title
+    """
+    plt.figure(figsize=(10, 6))
+    plt.scatter(y_test, y_pred, alpha=0.5)
+    plt.plot([y_test.min(), y_test.max()],
+             [y_test.min(), y_test.max()],
+             'r--', lw=2)
+    plt.xlabel('Actual Gold Price')
+    plt.ylabel('Predicted Gold Price')
+    plt.title(f'{model_name}: Predicted vs Actual Gold Prices')
+    plt.tight_layout()
+    plt.show()
+
+
 def evaluate_model(model, X_test, y_test, y_pred, model_name):
     r2 = r2_score(y_test, y_pred)
     evs = explained_variance_score(y_test, y_pred)
@@ -117,21 +128,13 @@ def evaluate_model(model, X_test, y_test, y_pred, model_name):
         print("\nFeature Importance:")
         print(importances)
 
-        plt.figure(figsize=(10, 6))
-        sns.barplot(x='Importance', y='Feature', data=importances)
-        plt.title(f'Feature Importance - {model_name}')
-        plt.tight_layout()
-        plt.show()
+    # Add the visualization for predicted vs actual values
+    plot_predictions_vs_actual(y_test, y_pred, model_name)
 
 
 def train_and_evaluate_models(X_train, X_test, y_train, y_test):
     models = {
         'Linear Regression': LinearRegression(),
-        # You could add more models here, e.g.:
-        # 'Lasso': Lasso(alpha=0.1),
-        # 'Ridge': Ridge(alpha=1.0),
-        # 'ElasticNet': ElasticNet(alpha=0.1),
-        # 'SVR': SVR(kernel='rbf')
     }
 
     results = {}
@@ -156,7 +159,7 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test):
 def main():
     # Load data
     print("Loading data...")
-    df = load_data('dataset/combined_data_v2.csv')
+    df = load_data('dataset/combined_dataset.csv')
     print(f"\nDataset shape: {df.shape}")
     print("\nFirst few rows:")
     print(df.head())

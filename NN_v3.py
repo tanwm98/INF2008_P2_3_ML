@@ -19,16 +19,18 @@ import torch.nn as nn
 # Neural Network Model Definition
 class GoldPriceNN(nn.Module):
     def __init__(self, input_size):
-        super(GoldPriceNN, self).__init__()
-        self.hidden = nn.Linear(input_size, 32)
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(input_size, 32),
+            nn.BatchNorm1d(32),
+            nn.LeakyReLU(),
+            nn.Dropout(0.7)
+        )
         self.output = nn.Linear(32, 1)
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x = self.sigmoid(self.hidden(x))
-        x = self.output(x)
-        return x
-
+        x = self.fc(x)
+        return self.output(x)
 
 class GoldDataset(Dataset):
     def __init__(self, X, y):
@@ -53,7 +55,7 @@ class WeightedHuberLoss(nn.Module):
         return self.huber(pred * weights, target * weights)
 
 
-def augment_data(X, y, noise_level=0.02):
+def augment_data(X, y, noise_level=0.03):
     # Add small random noise to features
     noise = torch.randn_like(X) * noise_level
     X_aug = X + noise
@@ -84,72 +86,69 @@ def calculate_rsi(data, periods=14):
 
 
 def prepare_data(df, train_ratio=0.7):
-    # Primary features based on correlation
-    primary_features = ['Silver', 'S&P500', 'cpi']  # Highest correlations: 0.92, 0.94, 0.89
-
-    # Technical indicators
-    df['Gold_MA5'] = df['Gold'].rolling(window=5).mean()
-    df['Gold_MA10'] = df['Gold'].rolling(window=10).mean()
-    df['RSI'] = calculate_rsi(df['Gold'], periods=14)
-
-    # Price changes and momentum
-    df['Gold_Return'] = df['Gold'].pct_change()
-    df['Silver_Return'] = df['Silver'].pct_change()
-    df['SP500_Return'] = df['S&P500'].pct_change()
-
-    # Volatility
-    df['Gold_Vol'] = df['Gold'].rolling(window=10).std()
-
-    # Ratios
-    df['Gold_Silver_Ratio'] = df['Gold'] / df['Silver']
-
-    # Add EMA
-    df['Gold_EMA5'] = df['Gold'].ewm(span=5, adjust=False).mean()
-    df['Gold_EMA10'] = df['Gold'].ewm(span=10, adjust=False).mean()
-
-    # Add ROC
-    df['Gold_ROC'] = df['Gold'].pct_change(periods=5)
-
-    # Add more interaction features
-    df['Gold_Silver_Change'] = df['Gold_Return'] - df['Silver_Return']
-    df['Price_Momentum'] = df['Gold_Return'].rolling(window=5).mean()
-    df.dropna(inplace=True)
-
-    # Update your features list
-    features = primary_features + [
-        'Gold_MA5', 'Gold_MA10', 'Gold_EMA5', 'Gold_EMA10', 'RSI',
-        'Gold_Return', 'Silver_Return', 'SP500_Return',
-        'Gold_Vol', 'Gold_Silver_Ratio', 'Gold_ROC',
-        'Gold_Silver_Change', 'Price_Momentum'
-    ]
-
-    # Sort and split data
+    """Prepare data without using gold-derived features"""
+    # First split data chronologically
     df_sorted = df.sort_values('Date')
     cutoff = int(len(df_sorted) * train_ratio)
-    train_df = df_sorted.iloc[:cutoff]
-    test_df = df_sorted.iloc[cutoff:]
+    train_df = df_sorted.iloc[:cutoff].copy()
+    test_df = df_sorted.iloc[cutoff:].copy()
 
-    # Prepare feature matrices
+    # Base exogenous features (not derived from Gold)
+    base_features = ['Silver', 'S&P500', 'cpi', 'Crude Oil', 'DXY', 'rates']
+    base_features = [f for f in base_features if f in df.columns]
+
+    # Feature engineering separately on train and test
+    for dataset in [train_df, test_df]:
+        # Generate features from exogenous variables only
+        dataset['Silver_Return'] = dataset['Silver'].pct_change()
+        dataset['Silver_MA5'] = dataset['Silver'].rolling(window=5).mean()
+        dataset['Silver_EMA10'] = dataset['Silver'].ewm(span=10, adjust=False).mean()
+
+        dataset['SP500_Return'] = dataset['S&P500'].pct_change()
+        dataset['SP500_MA10'] = dataset['S&P500'].rolling(window=10).mean()
+
+        if 'Crude Oil' in dataset.columns:
+            dataset['Oil_Return'] = dataset['Crude Oil'].pct_change()
+
+        # Create ratio features (avoiding any that involve Gold)
+        if 'Silver' in dataset.columns and 'Crude Oil' in dataset.columns:
+            dataset['Silver_Oil_Ratio'] = dataset['Silver'] / dataset['Crude Oil']
+
+    # Drop missing values from each set separately
+    train_df.dropna(inplace=True)
+    test_df.dropna(inplace=True)
+
+    # Create feature list without any Gold-derived features
+    feature_columns = base_features + [
+        col for col in train_df.columns
+        if col not in ['Gold', 'Date'] and 'Gold' not in col
+    ]
+
+    # Ensure all features exist in both datasets
+    features = [f for f in feature_columns if f in train_df.columns and f in test_df.columns]
+
+    # Prepare feature matrices and target vectors
     X_train = train_df[features].values
-    y_train = train_df['Gold'].values.reshape(-1, 1)
+    y_train = train_df['Gold'].values
     X_test = test_df[features].values
-    y_test = test_df['Gold'].values.reshape(-1, 1)
+    y_test = test_df['Gold'].values
 
-    # Scale features
-    feature_scaler = MinMaxScaler()
+    # Scale features using StandardScaler
+    feature_scaler = StandardScaler()
     X_train_scaled = feature_scaler.fit_transform(X_train)
     X_test_scaled = feature_scaler.transform(X_test)
 
-    # Scale target
-    target_scaler = MinMaxScaler()
-    y_train_scaled = target_scaler.fit_transform(y_train)
-    y_test_scaled = target_scaler.transform(y_test)
+    # Scale target values using StandardScaler
+    target_scaler = StandardScaler()
+    y_train_scaled = target_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
+    y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).ravel()
 
-    # Create datasets
+    # Create datasets from scaled data
     train_dataset = GoldDataset(X_train_scaled, y_train_scaled)
     test_dataset = GoldDataset(X_test_scaled, y_test_scaled)
 
     return train_dataset, test_dataset, feature_scaler, target_scaler
+
 
 
 def create_correlation_heatmap(df):
@@ -166,21 +165,41 @@ def train_neural_network(train_dataset, test_dataset, input_size):
     torch.manual_seed(42)
     np.random.seed(42)
 
-    batch_size = 32  # Smaller batch size
-    learning_rate = 0.01  # Simple learning rate
-    epochs = 100  # Fewer epochs usually needed for simpler models
+    # Hyperparameters
+    batch_size = 23
+    initial_lr = 0.001
+    epochs = 500
+    patience = 10
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    # Augmented data
+    X_train, y_train = train_dataset.X, train_dataset.y
+    X_train_aug, y_train_aug = augment_data(X_train, y_train)
+
+    from torch.utils.data import TensorDataset
+    augmented_train_dataset = TensorDataset(X_train_aug, y_train_aug)
+
+    train_loader = DataLoader(augmented_train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=len(test_dataset))
 
     model = GoldPriceNN(input_size)
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
+
+    # AdamW optimizer with weight decay
+    optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=1e-2)
+
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=15, verbose=True, min_lr=1e-6
+    )
+
+    # Custom loss function - combination of MSE and Huber
+    mse_criterion = nn.MSELoss()
+    huber_criterion = nn.HuberLoss(delta=1.0)
 
     train_losses = []
     test_losses = []
     best_model = None
     best_loss = float('inf')
+    no_improve_count = 0
 
     for epoch in range(epochs):
         model.train()
@@ -189,29 +208,51 @@ def train_neural_network(train_dataset, test_dataset, input_size):
         for batch_X, batch_y in train_loader:
             optimizer.zero_grad()
             outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
+
+            # Combined loss
+            mse_loss = mse_criterion(outputs, batch_y)
+            huber_loss = huber_criterion(outputs, batch_y)
+            loss = 0.6 * mse_loss + 0.4 * huber_loss
+
             loss.backward()
+
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
             epoch_loss += loss.item()
 
-        # Simple validation
+        # Validation
         model.eval()
         with torch.no_grad():
             X_test, y_test = next(iter(test_loader))
             test_outputs = model(X_test)
-            test_loss = criterion(test_outputs, y_test)
+            test_loss = mse_criterion(test_outputs, y_test)
+
+        # Update learning rate based on validation performance
+        scheduler.step(test_loss)
 
         train_losses.append(epoch_loss / len(train_loader))
         test_losses.append(test_loss.item())
 
+        # Save best model
         if test_loss < best_loss:
             best_loss = test_loss
             best_model = model.state_dict().copy()
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
 
-        if epoch % 10 == 0:
-            print(
-                f'Epoch [{epoch}/{epochs}], Train Loss: {epoch_loss / len(train_loader):.4f}, Test Loss: {test_loss:.4f}')
+        # Early stopping
+        if no_improve_count >= patience:
+            print(f"Early stopping at epoch {epoch}")
+            break
 
+        if epoch % 20 == 0:
+            print(f'Epoch [{epoch}/{epochs}], Train Loss: {epoch_loss / len(train_loader):.4f}, '
+                  f'Test Loss: {test_loss:.4f}, LR: {optimizer.param_groups[0]["lr"]:.6f}')
+
+    # Load best model
     model.load_state_dict(best_model)
     return model, train_losses, test_losses
 
@@ -267,125 +308,6 @@ def evaluate_model(model, test_dataset, train_losses, test_losses, target_scaler
     plt.title('Predicted vs Actual Gold Prices')
     plt.show()
 
-
-def prepare_future_data(df, feature_scaler, num_days=7):
-    # Calculate typical daily movement limits from historical data
-    daily_changes = df['Gold'].pct_change().dropna()
-    daily_std = daily_changes.std()
-    max_daily_change = daily_std * 0.75
-
-    last_rows = df.tail(30)
-    last_data = df.iloc[-1].copy()
-    last_price = df['Gold'].iloc[-1]
-
-    market_holidays = ['2025-01-01']
-    future_dates = pd.date_range(start=df.iloc[-1]['Date'] + pd.Timedelta(days=1),
-                                 periods=num_days, freq='B')
-    future_dates = future_dates[~future_dates.strftime('%Y-%m-%d').isin(market_holidays)]
-
-    future_data = []
-    previous_pred = last_data.copy()
-    historical_prices = list(df['Gold'].tail(10))
-
-    # Calculate average daily move from recent history
-    avg_daily_move = abs(daily_changes.tail(30)).mean()
-
-    for i, future_date in enumerate(future_dates):
-        new_row = previous_pred.copy()
-        new_row['Date'] = future_date
-
-        # Calculate allowed price movement range with tighter constraints
-        max_move = min(last_price * max_daily_change, 25.0)  # Cap absolute move at $25
-        volatility_adjustment = np.random.normal(0, max_move / 5)  # Even smaller volatility
-
-        # Add trend persistence (momentum)
-        if i > 0:
-            prev_trend = (future_data[-1]['Gold'] - future_data[-2]['Gold']) if i > 1 else 0
-            trend_factor = prev_trend * 0.3  # 30% trend persistence
-            volatility_adjustment += trend_factor
-
-        # Constrain the movement
-        if i == 0:
-            new_price = last_price + volatility_adjustment
-        else:
-            prev_price = future_data[-1]['Gold']
-            new_price = prev_price + volatility_adjustment
-
-        # Ensure movement isn't too extreme
-        max_up = (last_price if i == 0 else prev_price) + max_move
-        max_down = (last_price if i == 0 else prev_price) - max_move
-        new_price = np.clip(new_price, max_down, max_up)
-
-        new_row['Gold'] = new_price
-        historical_prices.append(new_price)
-
-        # Update technical indicators using the rolling window
-        new_row['Gold_MA5'] = np.mean(historical_prices[-5:])
-        new_row['Gold_MA10'] = np.mean(historical_prices[-10:])
-
-        # Calculate EMAs
-        if i == 0:
-            new_row['Gold_EMA5'] = df['Gold'].tail(5).ewm(span=5, adjust=False).mean().iloc[-1]
-            new_row['Gold_EMA10'] = df['Gold'].tail(10).ewm(span=10, adjust=False).mean().iloc[-1]
-        else:
-            new_row['Gold_EMA5'] = new_price * 0.333 + future_data[-1]['Gold_EMA5'] * 0.667
-            new_row['Gold_EMA10'] = new_price * 0.182 + future_data[-1]['Gold_EMA10'] * 0.818
-
-        # Calculate returns with proper reference
-        prev_gold = last_price if i == 0 else future_data[-1]['Gold']
-        new_row['Gold_Return'] = (new_price - prev_gold) / prev_gold
-        new_row['Gold_ROC'] = new_row['Gold_Return'] * 100
-
-        # Update volatility
-        new_row['Gold_Vol'] = np.std(historical_prices[-10:])
-
-        # Update Silver price based on historical ratio
-        avg_ratio = df['Gold_Silver_Ratio'].mean()
-        new_row['Silver'] = new_price / avg_ratio
-
-        future_data.append(new_row)
-        previous_pred = new_row.copy()
-
-    future_df = pd.DataFrame(future_data)
-
-    # Add controlled noise to other features
-    for feature in ['S&P500', 'cpi']:
-        feature_std = df[feature].std() * 0.05  # Reduced noise
-        future_df[feature] = future_df[feature].mean() + np.random.normal(0, feature_std, size=len(future_df))
-
-    features = ['Silver', 'S&P500', 'cpi', 'Gold_MA5', 'Gold_MA10', 'Gold_EMA5', 'Gold_EMA10',
-                'RSI', 'Gold_Return', 'Silver_Return', 'SP500_Return', 'Gold_Vol',
-                'Gold_Silver_Ratio', 'Gold_ROC', 'Gold_Silver_Change', 'Price_Momentum']
-
-    X_future = future_df[features].values
-    X_future_scaled = feature_scaler.transform(X_future)
-
-    return future_dates, X_future_scaled
-
-
-def predict_future(model, df, feature_scaler, target_scaler, num_days=7):
-    model.eval()
-    future_dates, X_future_scaled = prepare_future_data(df, feature_scaler, num_days)
-
-    # Convert to tensor
-    X_future_tensor = torch.FloatTensor(X_future_scaled)
-
-    # Make predictions
-    with torch.no_grad():
-        predictions_scaled = model(X_future_tensor)
-
-    # Convert predictions back to original scale
-    predictions = target_scaler.inverse_transform(predictions_scaled.numpy())
-
-    # Create results dataframe
-    results_df = pd.DataFrame({
-        'Date': future_dates,
-        'Predicted_Gold_Price': predictions.flatten()
-    })
-
-    return results_df
-
-
 def main():
     # Load data
     print("Loading data...")
@@ -409,23 +331,6 @@ def main():
     print("\nEvaluating model...")
     evaluate_model(model, test_dataset, train_losses, test_losses, target_scaler)
 
-    # After training and evaluating the model
-    print("\nPredicting future gold prices...")
-    future_predictions = predict_future(model, df, feature_scaler, target_scaler, num_days=7)
-    print("\nPredicted Gold Prices for next week:")
-    print(future_predictions)
-
-    # Plot the predictions
-    plt.figure(figsize=(10, 6))
-    plt.plot(future_predictions['Date'], future_predictions['Predicted_Gold_Price'],
-             marker='o', linestyle='-', label='Predicted')
-    plt.title('Gold Price Predictions for Next Week')
-    plt.xlabel('Date')
-    plt.ylabel('Gold Price')
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
 
 
 if __name__ == "__main__":

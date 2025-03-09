@@ -10,6 +10,19 @@ import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
 from sklearn.linear_model import LinearRegression
+import torch
+from torch.utils.data import Dataset
+
+class GoldDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.FloatTensor(X)
+        self.y = torch.FloatTensor(y).reshape(-1, 1)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
 
 def load_data(file_path):
@@ -28,42 +41,69 @@ def load_data(file_path):
 
     return df
 
-
-def time_based_split(df, train_ratio=0.7):
-    """
-    Splits the DataFrame into train/test sets based on chronological order.
-    train_ratio: fraction of data used for training.
-    """
+def prepare_data(df, train_ratio=0.7):
+    """Prepare data without using gold-derived features"""
+    # First split data chronologically
     df_sorted = df.sort_values('Date')
     cutoff = int(len(df_sorted) * train_ratio)
-    train_df = df_sorted.iloc[:cutoff]
-    test_df = df_sorted.iloc[cutoff:]
-    return train_df, test_df
+    train_df = df_sorted.iloc[:cutoff].copy()
+    test_df = df_sorted.iloc[cutoff:].copy()
 
+    # Base exogenous features (not derived from Gold)
+    base_features = ['Silver', 'S&P500', 'cpi', 'Crude Oil', 'DXY', 'rates']
+    base_features = [f for f in base_features if f in df.columns]
 
-def prepare_data(df, train_ratio=0.7):
-    """
-    Performs a time-based split, then separates features (X) and target (y).
-    """
-    # Split into train/test by date
-    train_df, test_df = time_based_split(df, train_ratio=train_ratio)
+    # Feature engineering separately on train and test
+    for dataset in [train_df, test_df]:
+        # Generate features from exogenous variables only
+        dataset['Silver_Return'] = dataset['Silver'].pct_change()
+        dataset['Silver_MA5'] = dataset['Silver'].rolling(window=5).mean()
+        dataset['Silver_EMA10'] = dataset['Silver'].ewm(span=10, adjust=False).mean()
 
-    # Features and target
-    features = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
-    target = 'Gold'
+        dataset['SP500_Return'] = dataset['S&P500'].pct_change()
+        dataset['SP500_MA10'] = dataset['S&P500'].rolling(window=10).mean()
 
+        if 'Crude Oil' in dataset.columns:
+            dataset['Oil_Return'] = dataset['Crude Oil'].pct_change()
+
+        # Create ratio features (avoiding any that involve Gold)
+        if 'Silver' in dataset.columns and 'Crude Oil' in dataset.columns:
+            dataset['Silver_Oil_Ratio'] = dataset['Silver'] / dataset['Crude Oil']
+
+    # Drop missing values from each set separately
+    train_df.dropna(inplace=True)
+    test_df.dropna(inplace=True)
+
+    # Create feature list without any Gold-derived features
+    feature_columns = base_features + [
+        col for col in train_df.columns
+        if col not in ['Gold', 'Date'] and 'Gold' not in col
+    ]
+
+    # Ensure all features exist in both datasets
+    features = [f for f in feature_columns if f in train_df.columns and f in test_df.columns]
+
+    # Prepare feature matrices and target vectors
     X_train = train_df[features].values
-    y_train = train_df[target].values
-
+    y_train = train_df['Gold'].values
     X_test = test_df[features].values
-    y_test = test_df[target].values
+    y_test = test_df['Gold'].values
 
-    # Scale features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    # Scale features using StandardScaler
+    feature_scaler = StandardScaler()
+    X_train_scaled = feature_scaler.fit_transform(X_train)
+    X_test_scaled = feature_scaler.transform(X_test)
 
-    return X_train_scaled, X_test_scaled, y_train, y_test
+    # Scale target values using StandardScaler
+    target_scaler = StandardScaler()
+    y_train_scaled = target_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
+    y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).ravel()
+
+    # Create datasets from scaled data
+    train_dataset = GoldDataset(X_train_scaled, y_train_scaled)
+    test_dataset = GoldDataset(X_test_scaled, y_test_scaled)
+
+    return train_dataset, test_dataset, feature_scaler, target_scaler
 
 
 def create_correlation_heatmap(df):
@@ -114,10 +154,19 @@ def evaluate_model(model, X_test, y_test, y_pred, model_name):
 
     # Feature importance for linear models
     if hasattr(model, 'coef_'):
-        feature_names = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
         coef = model.coef_
-        if len(coef.shape) > 1:
+        if coef.ndim > 1:
             coef = coef.ravel()
+
+        # Hardcoded list you originally had
+        hardcoded_features = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
+
+        # Check if the number of coefficients matches the hardcoded feature list
+        if len(coef) == len(hardcoded_features):
+            feature_names = hardcoded_features
+        else:
+            # Otherwise, create generic feature names
+            feature_names = [f"Feature {i}" for i in range(len(coef))]
 
         importances = pd.DataFrame({
             'Feature': feature_names,
@@ -128,7 +177,7 @@ def evaluate_model(model, X_test, y_test, y_pred, model_name):
         print("\nFeature Importance:")
         print(importances)
 
-    # Add the visualization for predicted vs actual values
+    # Visualize predicted vs actual values
     plot_predictions_vs_actual(y_test, y_pred, model_name)
 
 
@@ -170,11 +219,17 @@ def main():
 
     # Prepare data for modeling
     print("\nPreparing data for modeling with a time-based split (70% train / 30% test)...")
-    X_train, X_test, y_train, y_test = prepare_data(df, train_ratio=0.7)
+    train_dataset, test_dataset, feature_scaler, target_scaler = prepare_data(df, train_ratio=0.7)
 
-    # Train and evaluate models
+    # Convert torch tensors to numpy arrays for training
+    X_train_np = train_dataset.X.numpy()
+    y_train_np = train_dataset.y.numpy().ravel()  # Flatten if needed
+    X_test_np = test_dataset.X.numpy()
+    y_test_np = test_dataset.y.numpy().ravel()
+
+    # Train and evaluate models using numpy arrays
     print("\nTraining and evaluating models...")
-    results = train_and_evaluate_models(X_train, X_test, y_train, y_test)
+    results = train_and_evaluate_models(X_train_np, X_test_np, y_train_np, y_test_np)
 
 
 if __name__ == "__main__":

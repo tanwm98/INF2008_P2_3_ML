@@ -5,7 +5,7 @@ warnings.filterwarnings('ignore')
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
 from sklearn.svm import SVR
 from sklearn.model_selection import GridSearchCV
@@ -46,47 +46,64 @@ def calculate_rsi(data, periods=14):
     return rsi
 
 def prepare_data(df, train_ratio=0.7):
-    primary_features = ['Silver', 'S&P500', 'cpi']
-    df['Gold_MA5'] = df['Gold'].rolling(window=5).mean()
-    df['Gold_MA10'] = df['Gold'].rolling(window=10).mean()
-    df['RSI'] = calculate_rsi(df['Gold'], periods=14)
-    df['Gold_Return'] = df['Gold'].pct_change()
-    df['Silver_Return'] = df['Silver'].pct_change()
-    df['SP500_Return'] = df['S&P500'].pct_change()
-    df['Gold_Vol'] = df['Gold'].rolling(window=10).std()
-    df['Gold_Silver_Ratio'] = df['Gold'] / df['Silver']
-    df['Gold_EMA5'] = df['Gold'].ewm(span=5, adjust=False).mean()
-    df['Gold_EMA10'] = df['Gold'].ewm(span=10, adjust=False).mean()
-    df['Gold_ROC'] = df['Gold'].pct_change(periods=5)
-    df['Gold_Silver_Change'] = df['Gold_Return'] - df['Silver_Return']
-    df['Price_Momentum'] = df['Gold_Return'].rolling(window=5).mean()
-    df.dropna(inplace=True)
-
-    features = primary_features + [
-        'Gold_MA5', 'Gold_MA10', 'Gold_EMA5', 'Gold_EMA10', 'RSI',
-        'Gold_Return', 'Silver_Return', 'SP500_Return',
-        'Gold_Vol', 'Gold_Silver_Ratio', 'Gold_ROC',
-        'Gold_Silver_Change', 'Price_Momentum'
-    ]
-
+    """Prepare data without using gold-derived features"""
+    # First split data chronologically
     df_sorted = df.sort_values('Date')
     cutoff = int(len(df_sorted) * train_ratio)
-    train_df = df_sorted.iloc[:cutoff]
-    test_df = df_sorted.iloc[cutoff:]
+    train_df = df_sorted.iloc[:cutoff].copy()
+    test_df = df_sorted.iloc[cutoff:].copy()
 
+    # Base exogenous features (not derived from Gold)
+    base_features = ['Silver', 'S&P500', 'cpi', 'Crude Oil', 'DXY', 'rates']
+    base_features = [f for f in base_features if f in df.columns]
+
+    # Feature engineering separately on train and test
+    for dataset in [train_df, test_df]:
+        # Generate features from exogenous variables only
+        dataset['Silver_Return'] = dataset['Silver'].pct_change()
+        dataset['Silver_MA5'] = dataset['Silver'].rolling(window=5).mean()
+        dataset['Silver_EMA10'] = dataset['Silver'].ewm(span=10, adjust=False).mean()
+
+        dataset['SP500_Return'] = dataset['S&P500'].pct_change()
+        dataset['SP500_MA10'] = dataset['S&P500'].rolling(window=10).mean()
+
+        if 'Crude Oil' in dataset.columns:
+            dataset['Oil_Return'] = dataset['Crude Oil'].pct_change()
+
+        # Create ratio features (avoiding any that involve Gold)
+        if 'Silver' in dataset.columns and 'Crude Oil' in dataset.columns:
+            dataset['Silver_Oil_Ratio'] = dataset['Silver'] / dataset['Crude Oil']
+
+    # Drop missing values from each set separately
+    train_df.dropna(inplace=True)
+    test_df.dropna(inplace=True)
+
+    # Create feature list without any Gold-derived features
+    feature_columns = base_features + [
+        col for col in train_df.columns
+        if col not in ['Gold', 'Date'] and 'Gold' not in col
+    ]
+
+    # Ensure all features exist in both datasets
+    features = [f for f in feature_columns if f in train_df.columns and f in test_df.columns]
+
+    # Prepare feature matrices and target vectors
     X_train = train_df[features].values
-    y_train = train_df['Gold'].values.reshape(-1, 1)
+    y_train = train_df['Gold'].values
     X_test = test_df[features].values
-    y_test = test_df['Gold'].values.reshape(-1, 1)
+    y_test = test_df['Gold'].values
 
-    feature_scaler = MinMaxScaler()
+    # Scale features using StandardScaler
+    feature_scaler = StandardScaler()
     X_train_scaled = feature_scaler.fit_transform(X_train)
     X_test_scaled = feature_scaler.transform(X_test)
 
-    target_scaler = MinMaxScaler()
-    y_train_scaled = target_scaler.fit_transform(y_train)
-    y_test_scaled = target_scaler.transform(y_test)
+    # Scale target values using StandardScaler
+    target_scaler = StandardScaler()
+    y_train_scaled = target_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
+    y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).ravel()
 
+    # Create datasets from scaled data
     train_dataset = GoldDataset(X_train_scaled, y_train_scaled)
     test_dataset = GoldDataset(X_test_scaled, y_test_scaled)
 

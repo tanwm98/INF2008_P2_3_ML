@@ -1,5 +1,7 @@
 import warnings
 import matplotlib
+import torch
+
 matplotlib.use('TkAgg')  # Set the backend to TkAgg
 warnings.filterwarnings('ignore')
 
@@ -7,10 +9,21 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
 from sklearn.linear_model import LinearRegression
+from torch.utils.data import Dataset, DataLoader
 
+class GoldDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.FloatTensor(X)
+        self.y = torch.FloatTensor(y).reshape(-1, 1)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
 def load_data(file_path):
     # Read the dataset
@@ -42,28 +55,64 @@ def time_based_split(df, train_ratio=0.7):
 
 
 def prepare_data(df, train_ratio=0.7):
-    """
-    Performs a time-based split, then separates features (X) and target (y).
-    """
-    # Split into train/test by date
-    train_df, test_df = time_based_split(df, train_ratio=train_ratio)
+    """Prepare data for linear regression"""
+    # Primary features based on correlation
+    primary_features = ['Silver', 'S&P500', 'cpi']
 
-    # Features and target
-    features = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
-    target = 'Gold'
+    # Add other features if present
+    for feature in ['Crude Oil', 'DXY', 'rates']:
+        if feature in df.columns:
+            primary_features.append(feature)
 
+    # Technical indicators
+    df['Gold_MA5'] = df['Gold'].rolling(window=5).mean()
+    df['Gold_MA10'] = df['Gold'].rolling(window=10).mean()
+    df['RSI'] = calculate_rsi(df['Gold'], periods=14)
+    df['Gold_Return'] = df['Gold'].pct_change()
+    df['Silver_Return'] = df['Silver'].pct_change()
+    df['SP500_Return'] = df['S&P500'].pct_change()
+    df['Gold_Vol'] = df['Gold'].rolling(window=10).std()
+    df['Gold_Silver_Ratio'] = df['Gold'] / df['Silver']
+    df['Gold_EMA5'] = df['Gold'].ewm(span=5, adjust=False).mean()
+    df['Gold_EMA10'] = df['Gold'].ewm(span=10, adjust=False).mean()
+    df['Gold_ROC'] = df['Gold'].pct_change(periods=5)
+    df['Gold_Silver_Change'] = df['Gold_Return'] - df['Silver_Return']
+    df['Price_Momentum'] = df['Gold_Return'].rolling(window=5).mean()
+
+    # Drop missing values
+    df.dropna(inplace=True)
+
+    # Final features list
+    features = primary_features + [
+        'Gold_MA5', 'Gold_MA10', 'Gold_EMA5', 'Gold_EMA10', 'RSI',
+        'Gold_Return', 'Silver_Return', 'SP500_Return',
+        'Gold_Vol', 'Gold_Silver_Ratio', 'Gold_ROC',
+        'Gold_Silver_Change', 'Price_Momentum'
+    ]
+
+    # Split chronologically to prevent data leakage
+    df_sorted = df.sort_values('Date')
+    cutoff = int(len(df_sorted) * train_ratio)
+    train_df = df_sorted.iloc[:cutoff]
+    test_df = df_sorted.iloc[cutoff:]
+
+    # Prepare feature matrices
     X_train = train_df[features].values
-    y_train = train_df[target].values
-
+    y_train = train_df['Gold'].values
     X_test = test_df[features].values
-    y_test = test_df[target].values
+    y_test = test_df['Gold'].values
 
     # Scale features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    feature_scaler = StandardScaler()
+    X_train_scaled = feature_scaler.fit_transform(X_train)
+    X_test_scaled = feature_scaler.transform(X_test)
 
-    return X_train_scaled, X_test_scaled, y_train, y_test
+    # Scale target
+    target_scaler = StandardScaler()
+    y_train_scaled = target_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
+    y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).ravel()
+
+    return X_train_scaled, X_test_scaled, y_train_scaled, y_test_scaled, feature_scaler, target_scaler, features
 
 
 def create_correlation_heatmap(df):
@@ -98,7 +147,8 @@ def plot_predictions_vs_actual(y_test, y_pred, model_name):
     plt.show()
 
 
-def evaluate_model(model, X_test, y_test, y_pred, model_name):
+def evaluate_model(model, X_test, y_test, y_pred, model_name, features):
+    """Evaluate model performance and show feature importance"""
     r2 = r2_score(y_test, y_pred)
     evs = explained_variance_score(y_test, y_pred)
     mae = mean_absolute_error(y_test, y_pred)
@@ -112,49 +162,68 @@ def evaluate_model(model, X_test, y_test, y_pred, model_name):
     print(f"Mean Squared Error: {mse:.2f}")
     print(f"Root Mean Squared Error: {rmse:.2f}")
 
-    # Feature importance for linear models
-    if hasattr(model, 'coef_'):
-        feature_names = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
-        coef = model.coef_
-        if len(coef.shape) > 1:
-            coef = coef.ravel()
+    # Feature importance for linear regression
+    coef = model.coef_
+    if len(coef.shape) > 1:
+        coef = coef.ravel()
 
-        importances = pd.DataFrame({
-            'Feature': feature_names,
-            'Importance': np.abs(coef)
-        })
-        importances.sort_values('Importance', ascending=False, inplace=True)
+    importances = pd.DataFrame({
+        'Feature': features,
+        'Importance': np.abs(coef)
+    })
+    importances.sort_values('Importance', ascending=False, inplace=True)
 
-        print("\nFeature Importance:")
-        print(importances)
+    print("\nFeature Importance:")
+    print(importances)
 
     # Add the visualization for predicted vs actual values
     plot_predictions_vs_actual(y_test, y_pred, model_name)
 
 
-def train_and_evaluate_models(X_train, X_test, y_train, y_test):
-    models = {
-        'Linear Regression': LinearRegression(),
+def train_and_evaluate_models(X_train, X_test, y_train, y_test, features):
+    """Train and evaluate linear regression model"""
+    # Create and train model
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+
+    # Make predictions
+    y_pred = model.predict(X_test)
+
+    # Calculate metrics
+    r2 = r2_score(y_test, y_pred)
+    evs = explained_variance_score(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    rmse = np.sqrt(mse)
+
+    # Store results
+    results = {
+        'Linear Regression': {
+            'R2': r2,
+            'EVS': evs,
+            'MAE': mae,
+            'MSE': mse,
+            'RMSE': rmse
+        }
     }
 
-    results = {}
-
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-
-        results[name] = {
-            'R2': r2_score(y_test, y_pred),
-            'EVS': explained_variance_score(y_test, y_pred),
-            'MAE': mean_absolute_error(y_test, y_pred),
-            'MSE': mean_squared_error(y_test, y_pred),
-            'RMSE': np.sqrt(mean_squared_error(y_test, y_pred))
-        }
-
-        evaluate_model(model, X_test, y_test, y_pred, name)
+    # Evaluate and display results
+    evaluate_model(model, X_test, y_test, y_pred, 'Linear Regression', features)
 
     return results
 
+def calculate_rsi(data, periods=14):
+    # Calculate price differences
+    delta = data.diff()
+
+    # Make two series: one for lower closes and one for higher closes
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+
+    # Calculate RSI
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 def main():
     # Load data
@@ -170,12 +239,11 @@ def main():
 
     # Prepare data for modeling
     print("\nPreparing data for modeling with a time-based split (70% train / 30% test)...")
-    X_train, X_test, y_train, y_test = prepare_data(df, train_ratio=0.7)
+    X_train, X_test, y_train, y_test, feature_scaler, target_scaler, features = prepare_data(df, train_ratio=0.7)
 
-    # Train and evaluate models
-    print("\nTraining and evaluating models...")
-    results = train_and_evaluate_models(X_train, X_test, y_train, y_test)
-
+    # Train and evaluate model
+    print("\nTraining and evaluating linear regression model...")
+    results = train_and_evaluate_models(X_train, X_test, y_train, y_test, features)
 
 if __name__ == "__main__":
     main()

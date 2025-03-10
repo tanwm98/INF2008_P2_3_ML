@@ -14,8 +14,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# --------------------------------------------------------------------
-# GoldDataset remains unchanged.
+# Custom Dataset class for PyTorch.
 class GoldDataset(Dataset):
     def __init__(self, X, y):
         self.X = torch.FloatTensor(X)
@@ -27,8 +26,7 @@ class GoldDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
-# --------------------------------------------------------------------
-# Data loading and feature engineering functions remain unchanged.
+# Load data by reading csv file and selecting relevant columns.
 def load_data(file_path):
     df = pd.read_csv(file_path)
     selected_columns = ['Date', 'Gold', 'Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
@@ -37,6 +35,7 @@ def load_data(file_path):
     df.dropna(inplace=True)
     return df
 
+# Calculate RSI
 def calculate_rsi(data, periods=14):
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
@@ -44,7 +43,8 @@ def calculate_rsi(data, periods=14):
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
-
+# prepare_data function now includes additional features.
+# The function also scales the features and target values.
 def prepare_data(df, train_ratio=0.7):
     primary_features = ['Silver', 'S&P500', 'cpi']
     df['Gold_MA5'] = df['Gold'].rolling(window=5).mean()
@@ -62,6 +62,7 @@ def prepare_data(df, train_ratio=0.7):
     df['Price_Momentum'] = df['Gold_Return'].rolling(window=5).mean()
     df.dropna(inplace=True)
 
+    # Define features and target columns.
     features = primary_features + [
         'Gold_MA5', 'Gold_MA10', 'Gold_EMA5', 'Gold_EMA10', 'RSI',
         'Gold_Return', 'Silver_Return', 'SP500_Return',
@@ -69,6 +70,7 @@ def prepare_data(df, train_ratio=0.7):
         'Gold_Silver_Change', 'Price_Momentum'
     ]
 
+    # Split the data into training and testing sets.
     df_sorted = df.sort_values('Date')
     cutoff = int(len(df_sorted) * train_ratio)
     train_df = df_sorted.iloc[:cutoff]
@@ -79,6 +81,7 @@ def prepare_data(df, train_ratio=0.7):
     X_test = test_df[features].values
     y_test = test_df['Gold'].values.reshape(-1, 1)
 
+    # Scale the features and target values.
     feature_scaler = MinMaxScaler()
     X_train_scaled = feature_scaler.fit_transform(X_train)
     X_test_scaled = feature_scaler.transform(X_test)
@@ -87,11 +90,13 @@ def prepare_data(df, train_ratio=0.7):
     y_train_scaled = target_scaler.fit_transform(y_train)
     y_test_scaled = target_scaler.transform(y_test)
 
+    # Create PyTorch datasets.
     train_dataset = GoldDataset(X_train_scaled, y_train_scaled)
     test_dataset = GoldDataset(X_test_scaled, y_test_scaled)
 
     return train_dataset, test_dataset, feature_scaler, target_scaler
 
+# Create a correlation heatmap to visualize the relationships between features using seaborn.
 def create_correlation_heatmap(df):
     correlation = df.drop('Date', axis=1).corr()
     plt.figure(figsize=(10, 8))
@@ -100,37 +105,40 @@ def create_correlation_heatmap(df):
     plt.tight_layout()
     plt.show()
 
-# --------------------------------------------------------------------
-# New function to tune the SVM model using Grid Search.
+# Tuning the SVM model using Grid Search.
 def tune_svm_model(train_dataset):
-    # Convert data from torch tensors to numpy arrays.
+    # Convert data from pytorch tensors to numpy arrays.
     X_train_np = train_dataset.X.numpy()
     y_train_np = train_dataset.y.numpy().ravel()
     
+    # Parameter for Grid Search
     param_grid = {
         'C': [0.1, 1, 10, 100],
         'epsilon': [0.001, 0.01, 0.1, 1],
         'gamma': ['scale', 'auto']
     }
     
-    svr = SVR(kernel='rbf')
+    # Perform Grid Search with 5-fold cross-validation.
+    svr = SVR(kernel='rbf') # SVR model created using Radial Basis Function kernel.
     grid_search = GridSearchCV(svr, param_grid, cv=5, scoring='neg_mean_squared_error', verbose=2, n_jobs=-1)
     grid_search.fit(X_train_np, y_train_np)
     
     print("Best parameters found:", grid_search.best_params_)
     best_svr = grid_search.best_estimator_
-    return best_svr
+    return best_svr # Return the best SVM model.
 
-# --------------------------------------------------------------------
-# Modified evaluation function for SVM.
+# Predicting gold prices using the tuned SVM model.
 def evaluate_model(model, test_dataset, target_scaler):
+    # Convert data from pytorch tensors to numpy arrays.
     X_test_np = test_dataset.X.numpy()
     y_test_np = test_dataset.y.numpy()
 
+    # Predict gold prices using the model and inverse transform the scaled values.
     y_pred_scaled = model.predict(X_test_np)
     y_pred_original = target_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1))
     y_test_original = target_scaler.inverse_transform(y_test_np)
 
+    #Calculate evaluation metrics.
     r2 = r2_score(y_test_original, y_pred_original)
     evs = explained_variance_score(y_test_original, y_pred_original)
     mae = mean_absolute_error(y_test_original, y_pred_original)
@@ -144,6 +152,7 @@ def evaluate_model(model, test_dataset, target_scaler):
     print(f"Mean Squared Error: {mse:.2f}")
     print(f"Root Mean Squared Error: {rmse:.2f}")
 
+    # Plotting the predicted vs actual gold prices.
     plt.figure(figsize=(10, 6))
     plt.scatter(y_test_original, y_pred_original, alpha=0.5)
     plt.plot([y_test_original.min(), y_test_original.max()],
@@ -154,9 +163,9 @@ def evaluate_model(model, test_dataset, target_scaler):
     plt.title('Predicted vs Actual Gold Prices (SVM)')
     plt.show()
 
-# --------------------------------------------------------------------
-# prepare_future_data and predict_future functions remain unchanged.
+
 def prepare_future_data(df, feature_scaler, num_days=7):
+    # Calculate the maximum daily change based on the standard deviation of daily changes.
     daily_changes = df['Gold'].pct_change().dropna()
     daily_std = daily_changes.std()
     max_daily_change = daily_std * 0.75
@@ -169,6 +178,7 @@ def prepare_future_data(df, feature_scaler, num_days=7):
                                  periods=num_days, freq='B')
     future_dates = future_dates[~future_dates.strftime('%Y-%m-%d').isin(market_holidays)]
 
+   
     future_data = []
     previous_pred = last_data.copy()
     historical_prices = list(df['Gold'].tail(10))
@@ -240,8 +250,6 @@ def predict_future(model, df, feature_scaler, target_scaler, num_days=7):
     })
     return results_df
 
-# --------------------------------------------------------------------
-# Main function now uses the tuned SVM model.
 def main():
     print("Loading data...")
     df = load_data('dataset/combined_dataset.csv')

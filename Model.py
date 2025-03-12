@@ -1,6 +1,7 @@
 import warnings
 import matplotlib
-matplotlib.use('TkAgg')  # Set the backend to TkAgg
+
+matplotlib.use('TkAgg')
 warnings.filterwarnings('ignore')
 
 import pandas as pd
@@ -10,19 +11,7 @@ import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
 from sklearn.linear_model import LinearRegression
-import torch
-from torch.utils.data import Dataset
-
-class GoldDataset(Dataset):
-    def __init__(self, X, y):
-        self.X = torch.FloatTensor(X)
-        self.y = torch.FloatTensor(y).reshape(-1, 1)
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
 
 
 def load_data(file_path):
@@ -41,72 +30,264 @@ def load_data(file_path):
 
     return df
 
-def prepare_data(df, train_ratio=0.7):
-    """Prepare data without using gold-derived features"""
-    # First split data chronologically
+
+def process_features(df):
+    """Create lag-based features to avoid leakage, including for Gold."""
+    result = df.copy()
+
+    # For all numerical columns, create percentage change features
+    numerical_cols = ['Silver', 'S&P500', 'Crude Oil', 'DXY', 'rates', 'cpi']
+    for feature in numerical_cols:
+        if feature in result.columns:
+            # Create percentage changes at different lags
+            for lag in [1, 3, 6, 12]:
+                result[f'{feature}_Pct_{lag}'] = result[feature].pct_change(periods=lag)
+                if lag < 12:  # Only for smaller lags
+                    result[f'{feature}_Accel_{lag}'] = result[feature].pct_change().diff(lag)
+            # Rolling volatility
+            for window in [5, 10, 20]:
+                result[f'{feature}_Vol_{window}'] = result[feature].pct_change().rolling(window=window).std()
+            # Moving average ratio
+            for window in [10, 20]:
+                ma = result[feature].rolling(window=window).mean()
+                result[f'{feature}_MA_Ratio_{window}'] = result[feature] / ma - 1
+
+    # Add lag-based features for Gold itself to capture time series patterns
+    if 'Gold' in result.columns:
+        for lag in [1, 3, 6, 12]:
+            result[f'Gold_Lag_{lag}'] = result['Gold'].shift(lag)
+        # Add rolling statistics for Gold
+        for window in [3, 6, 12]:
+            result[f'Gold_Rolling_Mean_{window}'] = result['Gold'].rolling(window=window).mean()
+            result[f'Gold_Rolling_Std_{window}'] = result['Gold'].rolling(window=window).std()
+
+    # Create cross-asset ratios
+    if 'Silver' in result.columns and 'Gold' in result.columns:
+        result['Gold_Silver_Ratio'] = result['Gold'] / result['Silver']
+        result['Gold_Silver_Ratio_Pct'] = result['Gold_Silver_Ratio'].pct_change()
+    if 'Crude Oil' in result.columns and 'Gold' in result.columns:
+        result['Gold_Oil_Ratio'] = result['Gold'] / result['Crude Oil']
+        result['Gold_Oil_Ratio_Pct'] = result['Gold_Oil_Ratio'].pct_change()
+    if 'DXY' in result.columns and 'Gold' in result.columns:
+        result['Gold_DXY_Ratio'] = result['Gold'] / result['DXY']
+        result['Gold_DXY_Ratio_Pct'] = result['Gold_DXY_Ratio'].pct_change()
+
+    # Drop original features that might cause leakage
+    leakage_cols = ['Silver', 'S&P500']
+    result = result.drop(leakage_cols, axis=1)
+
+    return result
+
+
+def prepare_data(df, train_ratio=0.7, val_ratio=0.15):
+    """Split the data into train/validation/test sets and process features"""
     df_sorted = df.sort_values('Date')
-    cutoff = int(len(df_sorted) * train_ratio)
-    train_df = df_sorted.iloc[:cutoff].copy()
-    test_df = df_sorted.iloc[cutoff:].copy()
 
-    # Base exogenous features (not derived from Gold)
-    base_features = ['Silver', 'S&P500', 'cpi', 'Crude Oil', 'DXY', 'rates']
-    base_features = [f for f in base_features if f in df.columns]
+    # Print warnings for high correlations
+    corr_with_gold = df_sorted.corr()['Gold'].abs().sort_values(ascending=False)
+    high_corr_features = [f for f in corr_with_gold[corr_with_gold > 0.9].index.tolist() if f not in ['Gold', 'Date']]
+    if high_corr_features:
+        print("WARNING: The following features have very high correlation with Gold (potential leakage):")
+        for feature in high_corr_features:
+            print(f"- {feature}")
 
-    # Feature engineering separately on train and test
-    for dataset in [train_df, test_df]:
-        # Generate features from exogenous variables only
-        dataset['Silver_Return'] = dataset['Silver'].pct_change()
-        dataset['Silver_MA5'] = dataset['Silver'].rolling(window=5).mean()
-        dataset['Silver_EMA10'] = dataset['Silver'].ewm(span=10, adjust=False).mean()
+    # Split data by time
+    n = len(df_sorted)
+    train_cutoff = int(n * train_ratio)
+    val_cutoff = int(n * (train_ratio + val_ratio))
 
-        dataset['SP500_Return'] = dataset['S&P500'].pct_change()
-        dataset['SP500_MA10'] = dataset['S&P500'].rolling(window=10).mean()
+    train_df = df_sorted.iloc[:train_cutoff].copy()
+    val_df = df_sorted.iloc[train_cutoff:val_cutoff].copy()
+    test_df = df_sorted.iloc[val_cutoff:].copy()
 
-        if 'Crude Oil' in dataset.columns:
-            dataset['Oil_Return'] = dataset['Crude Oil'].pct_change()
+    # Process features for each split
+    train_df = process_features(train_df)
+    val_df = process_features(val_df)
+    test_df = process_features(test_df)
 
-        # Create ratio features (avoiding any that involve Gold)
-        if 'Silver' in dataset.columns and 'Crude Oil' in dataset.columns:
-            dataset['Silver_Oil_Ratio'] = dataset['Silver'] / dataset['Crude Oil']
-
-    # Drop missing values from each set separately
+    # Drop NaN values
     train_df.dropna(inplace=True)
+    val_df.dropna(inplace=True)
     test_df.dropna(inplace=True)
 
-    # Create feature list without any Gold-derived features
-    feature_columns = base_features + [
-        col for col in train_df.columns
-        if col not in ['Gold', 'Date'] and 'Gold' not in col
-    ]
+    # Build feature list (exclude Gold and Date and gold-derived features)
+    feature_columns = [col for col in train_df.columns if col not in ['Gold', 'Date'] and 'Gold' not in col]
+    features = list(dict.fromkeys(feature_columns))  # Remove duplicates
 
-    # Ensure all features exist in both datasets
-    features = [f for f in feature_columns if f in train_df.columns and f in test_df.columns]
+    print("Final features used in model training:")
+    for f in features:
+        print(f"- {f}")
 
-    # Prepare feature matrices and target vectors
+    # Prepare data arrays
     X_train = train_df[features].values
     y_train = train_df['Gold'].values
+    X_val = val_df[features].values
+    y_val = val_df['Gold'].values
     X_test = test_df[features].values
     y_test = test_df['Gold'].values
 
-    # Scale features using StandardScaler
+    # Scale features and target
     feature_scaler = StandardScaler()
     X_train_scaled = feature_scaler.fit_transform(X_train)
+    X_val_scaled = feature_scaler.transform(X_val)
     X_test_scaled = feature_scaler.transform(X_test)
 
-    # Scale target values using StandardScaler
     target_scaler = StandardScaler()
     y_train_scaled = target_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
+    y_val_scaled = target_scaler.transform(y_val.reshape(-1, 1)).ravel()
     y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).ravel()
 
-    # Create datasets from scaled data
-    train_dataset = GoldDataset(X_train_scaled, y_train_scaled)
-    test_dataset = GoldDataset(X_test_scaled, y_test_scaled)
+    return (X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled,
+            X_test_scaled, y_test_scaled, feature_scaler, target_scaler, features)
 
-    return train_dataset, test_dataset, feature_scaler, target_scaler
+
+def select_top_features(X_train, y_train, features, k=10):
+    """Select the most important features using F-regression and mutual information"""
+    # F-regression
+    f_selector = SelectKBest(f_regression, k=k)
+    f_selector.fit(X_train, y_train)
+    f_scores = f_selector.scores_
+
+    # Mutual information
+    mi_selector = SelectKBest(mutual_info_regression, k=k)
+    mi_selector.fit(X_train, y_train)
+    mi_scores = mi_selector.scores_
+
+    # Combine scores (normalize first)
+    f_scores_norm = f_scores / np.max(f_scores)
+    mi_scores_norm = mi_scores / np.max(mi_scores)
+    combined_scores = (f_scores_norm + mi_scores_norm) / 2
+
+    # Create a dataframe for easy sorting
+    importance_df = pd.DataFrame({
+        'Feature': features,
+        'F_Score': f_scores,
+        'MI_Score': mi_scores,
+        'Combined_Score': combined_scores
+    })
+
+    # Sort by combined score
+    importance_df = importance_df.sort_values('Combined_Score', ascending=False)
+
+    # Select top k features
+    top_features = importance_df.head(k)['Feature'].tolist()
+
+    print(f"\nTop {k} features selected:")
+    for i, (feature, score) in enumerate(zip(top_features, importance_df.head(k)['Combined_Score'])):
+        print(f"{i + 1}. {feature}: {score:.4f}")
+
+    # Get indices of top features
+    top_indices = [features.index(feature) for feature in top_features]
+
+    # Filter X_train to only include top features
+    X_train_selected = X_train[:, top_indices]
+
+    return top_features, top_indices, X_train_selected
+
+
+def time_series_cv(df, features, target='Gold', n_splits=5, test_size=50):
+    """Perform time series cross-validation"""
+    df_sorted = df.sort_values('Date').reset_index(drop=True)
+    df_processed = process_features(df_sorted)
+    df_processed.dropna(inplace=True)
+
+    cv_results = {
+        'train_r2': [], 'test_r2': [],
+        'train_rmse': [], 'test_rmse': [],
+        'selected_features': []
+    }
+
+    # Create time-based folds
+    n_samples = len(df_processed)
+    indices = []
+
+    for i in range(n_splits):
+        test_end = n_samples - i * test_size
+        test_start = test_end - test_size
+        if test_start <= 0:
+            continue
+        indices.append((0, test_start, test_start, test_end))
+
+    indices.reverse()  # Start with earliest test set
+
+    for i, (train_start, train_end, test_start, test_end) in enumerate(indices):
+        print(f"\nFold {i + 1}/{len(indices)}")
+        print(f"Train: samples {train_start} to {train_end - 1}")
+        print(f"Test: samples {test_start} to {test_end - 1}")
+
+        # Split data
+        train_df = df_processed.iloc[train_start:train_end]
+        test_df = df_processed.iloc[test_start:test_end]
+
+        # Prepare features and target
+        X_train = train_df[features].values
+        y_train = train_df[target].values
+        X_test = test_df[features].values
+        y_test = test_df[target].values
+
+        # Select top features
+        k = min(12, len(features))
+        top_features, top_indices, X_train_selected = select_top_features(X_train, y_train, features, k=k)
+        X_test_selected = X_test[:, top_indices]
+
+        # Scale data
+        scaler_X = StandardScaler()
+        X_train_scaled = scaler_X.fit_transform(X_train_selected)
+        X_test_scaled = scaler_X.transform(X_test_selected)
+
+        scaler_y = StandardScaler()
+        y_train_scaled = scaler_y.fit_transform(y_train.reshape(-1, 1)).ravel()
+        y_test_scaled = scaler_y.transform(y_test.reshape(-1, 1)).ravel()
+
+        # Train model
+        model = LinearRegression()
+        model.fit(X_train_scaled, y_train_scaled)
+
+        # Make predictions
+        y_train_pred = model.predict(X_train_scaled)
+        y_test_pred = model.predict(X_test_scaled)
+
+        # Calculate metrics
+        train_r2 = r2_score(y_train_scaled, y_train_pred)
+        test_r2 = r2_score(y_test_scaled, y_test_pred)
+        train_rmse = np.sqrt(mean_squared_error(y_train_scaled, y_train_pred))
+        test_rmse = np.sqrt(mean_squared_error(y_test_scaled, y_test_pred))
+
+        # Store results
+        cv_results['train_r2'].append(train_r2)
+        cv_results['test_r2'].append(test_r2)
+        cv_results['train_rmse'].append(train_rmse)
+        cv_results['test_rmse'].append(test_rmse)
+        cv_results['selected_features'].append(top_features)
+
+        print(f"Train R²: {train_r2:.4f}, Test R²: {test_r2:.4f}")
+        print(f"Train RMSE: {train_rmse:.4f}, Test RMSE: {test_rmse:.4f}")
+
+    # Print average results
+    avg_train_r2 = np.mean(cv_results['train_r2'])
+    avg_test_r2 = np.mean(cv_results['test_r2'])
+    avg_train_rmse = np.mean(cv_results['train_rmse'])
+    avg_test_rmse = np.mean(cv_results['test_rmse'])
+
+    print("\nAverage Cross-Validation Results:")
+    print(f"Train R²: {avg_train_r2:.4f}, Test R²: {avg_test_r2:.4f}")
+    print(f"Train RMSE: {avg_train_rmse:.4f}, Test RMSE: {avg_test_rmse:.4f}")
+
+    # Count feature selection frequency
+    print("\nFeature Selection Frequency:")
+    feature_counts = {}
+    for f_list in cv_results['selected_features']:
+        for feat in f_list:
+            feature_counts[feat] = feature_counts.get(feat, 0) + 1
+
+    for feat, count in sorted(feature_counts.items(), key=lambda x: x[1], reverse=True):
+        print(f"- {feat}: {count}/{len(indices)} folds")
+
+    return cv_results
 
 
 def create_correlation_heatmap(df):
+    """Create correlation heatmap of features"""
     # Create correlation matrix using numeric columns (drop Date)
     correlation = df.drop('Date', axis=1).corr()
 
@@ -118,19 +299,15 @@ def create_correlation_heatmap(df):
 
 
 def plot_predictions_vs_actual(y_test, y_pred, model_name):
-    """
-    Create a scatter plot comparing actual vs predicted values with a diagonal reference line.
-    
-    Parameters:
-    - y_test: Numpy array of actual gold prices
-    - y_pred: Numpy array of predicted gold prices
-    - model_name: String name of the model for the plot title
-    """
+    """Create a scatter plot comparing actual vs predicted values"""
     plt.figure(figsize=(10, 6))
     plt.scatter(y_test, y_pred, alpha=0.5)
+
+    # Add diagonal line for reference
     plt.plot([y_test.min(), y_test.max()],
              [y_test.min(), y_test.max()],
              'r--', lw=2)
+
     plt.xlabel('Actual Gold Price')
     plt.ylabel('Predicted Gold Price')
     plt.title(f'{model_name}: Predicted vs Actual Gold Prices')
@@ -138,71 +315,57 @@ def plot_predictions_vs_actual(y_test, y_pred, model_name):
     plt.show()
 
 
-def evaluate_model(model, X_test, y_test, y_pred, model_name):
+def evaluate_model(model, X_test, y_test, features):
+    """Evaluate the model and display results"""
+    # Make predictions
+    y_pred = model.predict(X_test)
+
+    # Calculate metrics
     r2 = r2_score(y_test, y_pred)
     evs = explained_variance_score(y_test, y_pred)
     mae = mean_absolute_error(y_test, y_pred)
     mse = mean_squared_error(y_test, y_pred)
     rmse = np.sqrt(mse)
 
-    print(f"\n{model_name} Results:")
+    print(f"\nLinear Regression Results:")
     print(f"R-Squared Value: {r2:.5f}")
     print(f"Explained Variance Score: {evs:.5f}")
     print(f"Mean Absolute Error: {mae:.2f}")
     print(f"Mean Squared Error: {mse:.2f}")
     print(f"Root Mean Squared Error: {rmse:.2f}")
 
-    # Feature importance for linear models
+    # Display feature importance
     if hasattr(model, 'coef_'):
         coef = model.coef_
-        if coef.ndim > 1:
-            coef = coef.ravel()
-
-        # Hardcoded list you originally had
-        hardcoded_features = ['Silver', 'Crude Oil', 'DXY', 'S&P500', 'cpi', 'rates']
-
-        # Check if the number of coefficients matches the hardcoded feature list
-        if len(coef) == len(hardcoded_features):
-            feature_names = hardcoded_features
-        else:
-            # Otherwise, create generic feature names
-            feature_names = [f"Feature {i}" for i in range(len(coef))]
-
         importances = pd.DataFrame({
-            'Feature': feature_names,
-            'Importance': np.abs(coef)
+            'Feature': features,
+            'Coefficient': coef,
+            'Absolute Importance': np.abs(coef)
         })
-        importances.sort_values('Importance', ascending=False, inplace=True)
+        importances = importances.sort_values('Absolute Importance', ascending=False)
 
         print("\nFeature Importance:")
         print(importances)
 
+        # Plot feature importance
+        plt.figure(figsize=(10, 6))
+        plt.barh(importances['Feature'][:10], importances['Absolute Importance'][:10])
+        plt.xlabel('Absolute Coefficient Value')
+        plt.title('Top 10 Features by Importance')
+        plt.tight_layout()
+        plt.show()
+
     # Visualize predicted vs actual values
-    plot_predictions_vs_actual(y_test, y_pred, model_name)
+    plot_predictions_vs_actual(y_test, y_pred, "Linear Regression")
 
-
-def train_and_evaluate_models(X_train, X_test, y_train, y_test):
-    models = {
-        'Linear Regression': LinearRegression(),
+    return {
+        'R2': r2,
+        'EVS': evs,
+        'MAE': mae,
+        'MSE': mse,
+        'RMSE': rmse,
+        'predictions': y_pred
     }
-
-    results = {}
-
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-
-        results[name] = {
-            'R2': r2_score(y_test, y_pred),
-            'EVS': explained_variance_score(y_test, y_pred),
-            'MAE': mean_absolute_error(y_test, y_pred),
-            'MSE': mean_squared_error(y_test, y_pred),
-            'RMSE': np.sqrt(mean_squared_error(y_test, y_pred))
-        }
-
-        evaluate_model(model, X_test, y_test, y_pred, name)
-
-    return results
 
 
 def main():
@@ -218,18 +381,51 @@ def main():
     create_correlation_heatmap(df)
 
     # Prepare data for modeling
-    print("\nPreparing data for modeling with a time-based split (70% train / 30% test)...")
-    train_dataset, test_dataset, feature_scaler, target_scaler = prepare_data(df, train_ratio=0.7)
+    print("\nPreparing data for modeling with train/validation/test split...")
+    X_train, y_train, X_val, y_val, X_test, y_test, feature_scaler, target_scaler, features = prepare_data(
+        df, train_ratio=0.7, val_ratio=0.15)
 
-    # Convert torch tensors to numpy arrays for training
-    X_train_np = train_dataset.X.numpy()
-    y_train_np = train_dataset.y.numpy().ravel()  # Flatten if needed
-    X_test_np = test_dataset.X.numpy()
-    y_test_np = test_dataset.y.numpy().ravel()
+    # Perform time series cross-validation
+    print("\nRunning time series cross-validation with feature selection...")
+    cv_results = time_series_cv(df, features, n_splits=5, test_size=50)
 
-    # Train and evaluate models using numpy arrays
-    print("\nTraining and evaluating models...")
-    results = train_and_evaluate_models(X_train_np, X_test_np, y_train_np, y_test_np)
+    # Identify most important features across CV folds
+    feature_counts = {}
+    for feat_list in cv_results['selected_features']:
+        for feat in feat_list:
+            feature_counts[feat] = feature_counts.get(feat, 0) + 1
+
+    top_features = [f for f, count in sorted(feature_counts.items(), key=lambda x: x[1], reverse=True)[:10]]
+    print("\nTop features across CV folds:")
+    for feature in top_features:
+        print(f"- {feature}")
+
+    # Filter to top features for final model
+    top_indices = [features.index(feature) for feature in top_features if feature in features]
+    X_train_selected = X_train[:, top_indices]
+    X_test_selected = X_test[:, top_indices]
+
+    # Train final model
+    print("\nTraining final model with selected features...")
+    final_model = LinearRegression()
+    final_model.fit(X_train_selected, y_train)
+
+    # Evaluate final model
+    print("\nEvaluating final model...")
+    results = evaluate_model(final_model, X_test_selected, y_test, top_features)
+
+    # Convert predictions back to original scale for interpretation
+    y_test_original = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+    y_pred_original = target_scaler.inverse_transform(results['predictions'].reshape(-1, 1)).flatten()
+
+    # Plot original scale predictions
+    plt.figure(figsize=(12, 6))
+    plt.plot(y_test_original, label='Actual')
+    plt.plot(y_pred_original, label='Predicted')
+    plt.title('Gold Price: Actual vs Predicted')
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == "__main__":

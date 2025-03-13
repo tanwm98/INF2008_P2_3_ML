@@ -1,8 +1,6 @@
 import warnings
 import matplotlib
 import random
-
-import optuna
 from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
@@ -243,15 +241,6 @@ def time_series_cv(df, features, target='Gold', n_splits=5, test_size=50):
 #######################################
 # Neural Network Training with L1 Regularization and Adam Optimizer
 #######################################
-
-def augment_data(X, y, noise_level=0.01, n_samples=5):
-    X_aug, y_aug = X.copy(), y.copy()
-    for _ in range(n_samples):
-        noise = np.random.normal(0, noise_level, X.shape)
-        X_noisy = X + noise
-        X_aug = np.vstack([X_aug, X_noisy])
-        y_aug = np.concatenate([y_aug, y])
-    return X_aug, y_aug
 
 def train_neural_network(train_dataset, val_dataset, input_size, epochs=200):
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=0,drop_last=True)

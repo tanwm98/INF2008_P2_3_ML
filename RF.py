@@ -302,6 +302,17 @@ class GoldPricePredictor:
 
         return feature_importance
 
+#######################################
+def plot_predictions_vs_actual(y_test, y_pred, model_name="RF Model"):
+    plt.figure(figsize=(10, 6))
+    plt.scatter(y_test, y_pred, alpha=0.5)
+    # Plot the diagonal line for reference
+    plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 'r--', lw=2)
+    plt.xlabel("Actual Gold Price")
+    plt.ylabel("Predicted Gold Price")
+    plt.title(f"{model_name}: Predicted vs Actual Gold Prices")
+    plt.tight_layout()
+    plt.show()
 
 #######################################
 # Main Function
@@ -354,8 +365,8 @@ def main():
     print("\nEvaluating on test set...")
     test_results = predictor.evaluate(X_test, y_test, recalibrate=True)
 
-    # Plot feature importance
-    predictor.plot_feature_importance(n=15)
+    # Plot predictions vs actual
+    plot_predictions_vs_actual(y_test, test_results['predictions']['recalibrated'], model_name="XGBoost Model")
 
     return predictor, test_results
 

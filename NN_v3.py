@@ -294,6 +294,50 @@ def train_neural_network(train_dataset, val_dataset, input_size, epochs=200):
     return model, train_losses, val_losses
 
 
+def evaluate_nn(y_train, y_train_pred, y_test, y_test_pred):
+    # Calculate metrics for training data
+    train_r2 = r2_score(y_train, y_train_pred)
+    train_evs = explained_variance_score(y_train, y_train_pred)
+    train_mae = mean_absolute_error(y_train, y_train_pred)
+    train_mse = mean_squared_error(y_train, y_train_pred)
+    train_rmse = np.sqrt(train_mse)
+    train_mape = np.mean(np.abs((y_train - y_train_pred) / y_train)) * 100
+
+    # Calculate metrics for testing data
+    test_r2 = r2_score(y_test, y_test_pred)
+    test_evs = explained_variance_score(y_test, y_test_pred)
+    test_mae = mean_absolute_error(y_test, y_test_pred)
+    test_mse = mean_squared_error(y_test, y_test_pred)
+    test_rmse = np.sqrt(test_mse)
+    test_mape = np.mean(np.abs((y_test - y_test_pred) / y_test)) * 100
+
+    print("\nFinal Neural Network Model Results (Selected Features):")
+    print(f"Training R²: {train_r2:.5f}  |  Test R²: {test_r2:.5f}")
+    print(f"Training EVS: {train_evs:.5f}  |  Test EVS: {test_evs:.5f}")
+    print(f"Training MAE: {train_mae:.2f}  |  Test MAE: {test_mae:.2f}")
+    print(f"Training MSE: {train_mse:.2f}  |  Test MSE: {test_mse:.2f}")
+    print(f"Training RMSE: {train_rmse:.2f}  |  Test RMSE: {test_rmse:.2f}")
+    print(f"Training MAPE: {train_mape:.2f}%  |  Test MAPE: {test_mape:.2f}%")
+
+    return {
+        'train': {
+            'R2': train_r2,
+            'EVS': train_evs,
+            'MAE': train_mae,
+            'MSE': train_mse,
+            'RMSE': train_rmse,
+            'MAPE': train_mape,
+        },
+        'test': {
+            'R2': test_r2,
+            'EVS': test_evs,
+            'MAE': test_mae,
+            'MSE': test_mse,
+            'RMSE': test_rmse,
+            'MAPE': test_mape,
+        }
+    }
+
 #######################################
 # Main Function
 #######################################
@@ -328,18 +372,25 @@ def main():
     model, train_losses, val_losses = train_neural_network(train_dataset_selected, test_dataset_selected, input_size, epochs = 50)
     model.eval()
     with torch.no_grad():
-        y_train_pred = model(torch.FloatTensor(X_train_selected)).numpy().flatten()
         y_test_pred = model(torch.FloatTensor(X_test_selected)).numpy().flatten()
-    train_r2 = r2_score(y_train, y_train_pred)
-    test_r2 = r2_score(y_test, y_test_pred)
-    train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
-    test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
-    print("\nFinal Model Results (Selected Features):")
-    print(f"R-Squared Value: {test_r2:.5f}")
-    print(f"Mean Squared Error: {mean_squared_error(y_test, y_test_pred):.2f}")
-    print(f"Root Mean Squared Error: {test_rmse:.2f}")
-    print(f"Training R²: {train_r2:.5f}  |  Test R²: {test_r2:.5f}")
-    print(f"Training RMSE: {train_rmse:.2f}  |  Test RMSE: {test_rmse:.2f}")
+
+    # Transform predictions and actual values back to the original scale
+    y_test_original = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+    y_test_pred_original = target_scaler.inverse_transform(y_test_pred.reshape(-1, 1)).flatten()
+
+    # Compute metrics on the original scale
+    r2_orig = r2_score(y_test_original, y_test_pred_original)
+    mae_orig = mean_absolute_error(y_test_original, y_test_pred_original)
+    mse_orig = mean_squared_error(y_test_original, y_test_pred_original)
+    rmse_orig = np.sqrt(mse_orig)
+
+    print("\nMetrics on Original Scale (Neural Network):")
+    print(f"R²: {r2_orig:.5f}")
+    print(f"MAE: {mae_orig:.2f}")
+    print(f"MSE: {mse_orig:.2f}")
+    print(f"RMSE: {rmse_orig:.2f}")
+    print("EVS: ", explained_variance_score(y_test_original, y_test_pred_original))
+
     y_test_original = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
     y_test_pred_original = target_scaler.inverse_transform(y_test_pred.reshape(-1, 1)).flatten()
     plt.figure(figsize=(10, 6))

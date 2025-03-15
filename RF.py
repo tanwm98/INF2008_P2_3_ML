@@ -6,7 +6,7 @@ import seaborn as sns
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+import xgboost as xgb
 import random
 
 random.seed(42)
@@ -132,7 +132,7 @@ class GoldPricePredictor:
         y_train_scaled = self.target_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
 
         # Define model with optimal parameters
-        self.rf_model = RandomForestRegressor(
+        self.rf_model = xgb.XGBRegressor(
             n_estimators=200,
             max_depth=15,
             min_samples_split=20,
@@ -195,68 +195,68 @@ class GoldPricePredictor:
         # Initial prediction without recalibration
         y_pred_initial = self.predict(X_test)
 
-        # Calculate metrics
+        # Calculate metrics for initial predictions
         initial_r2 = r2_score(y_test, y_pred_initial)
-        initial_rmse = np.sqrt(mean_squared_error(y_test, y_pred_initial))
+        initial_explained_variance = explained_variance_score(y_test, y_pred_initial)
         initial_mae = mean_absolute_error(y_test, y_pred_initial)
+        initial_mse = mean_squared_error(y_test, y_pred_initial)
+        initial_rmse = np.sqrt(initial_mse)
+        initial_mape = np.mean(np.abs((y_test - y_pred_initial) / y_test)) * 100
 
         print("\nInitial Prediction Metrics:")
         print(f"R²: {initial_r2:.5f}")
-        print(f"RMSE: {initial_rmse:.2f}")
+        print(f"Explained Variance Score: {initial_explained_variance:.5f}")
         print(f"MAE: {initial_mae:.2f}")
+        print(f"MSE: {initial_mse:.2f}")
+        print(f"RMSE: {initial_rmse:.2f}")
+        print(f"MAPE: {initial_mape:.2f}%")
 
         # If recalibration is enabled, perform recalibration prediction
         if recalibrate:
-            # Split test data for stepwise recalibration
             y_recalib = []
-
             for i in range(0, len(X_test), self.recalibration_window):
                 # Get the current batch
                 end_idx = min(i + self.recalibration_window, len(X_test))
                 X_batch = X_test[i:end_idx]
-
                 # Predict with current calibration
                 y_batch_pred = self.predict(X_batch)
                 y_recalib.extend(y_batch_pred)
-
                 # Recalibrate using actual values if we have more batches to process
                 if end_idx < len(X_test):
-                    self.predict(X_batch, recalibrate=True,
-                                 actual_values=y_test[i:end_idx])
+                    self.predict(X_batch, recalibrate=True, actual_values=y_test[i:end_idx])
 
-            # Calculate metrics after recalibration
+            # Calculate metrics for recalibrated predictions
             recalib_r2 = r2_score(y_test, y_recalib)
-            recalib_rmse = np.sqrt(mean_squared_error(y_test, y_recalib))
+            recalib_explained_variance = explained_variance_score(y_test, y_recalib)
             recalib_mae = mean_absolute_error(y_test, y_recalib)
+            recalib_mse = mean_squared_error(y_test, y_recalib)
+            recalib_rmse = np.sqrt(recalib_mse)
+            recalib_mape = np.mean(np.abs((y_test - y_recalib) / y_test)) * 100
 
             print("\nRecalibrated Prediction Metrics:")
             print(f"R²: {recalib_r2:.5f}")
-            print(f"RMSE: {recalib_rmse:.2f}")
+            print(f"Explained Variance Score: {recalib_explained_variance:.5f}")
             print(f"MAE: {recalib_mae:.2f}")
-
-            # Plot results
-            plt.figure(figsize=(14, 7))
-            plt.title('Gold Price: Actual vs Predicted (with Recalibration)')
-            plt.plot(y_test, 'b-', label='Actual Price')
-            plt.plot(y_pred_initial, 'g-', label='Initial Prediction')
-            plt.plot(y_recalib, 'r-', label='Recalibrated Prediction')
-            plt.xlabel('Time')
-            plt.ylabel('Gold Price')
-            plt.grid(True)
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
+            print(f"MSE: {recalib_mse:.2f}")
+            print(f"RMSE: {recalib_rmse:.2f}")
+            print(f"MAPE: {recalib_mape:.2f}%")
 
             return {
                 'initial_metrics': {
                     'r2': initial_r2,
+                    'explained_variance': initial_explained_variance,
+                    'mae': initial_mae,
+                    'mse': initial_mse,
                     'rmse': initial_rmse,
-                    'mae': initial_mae
+                    'mape': initial_mape
                 },
                 'recalibrated_metrics': {
                     'r2': recalib_r2,
+                    'explained_variance': recalib_explained_variance,
+                    'mae': recalib_mae,
+                    'mse': recalib_mse,
                     'rmse': recalib_rmse,
-                    'mae': recalib_mae
+                    'mape': recalib_mape
                 },
                 'predictions': {
                     'initial': y_pred_initial,
@@ -267,8 +267,11 @@ class GoldPricePredictor:
         return {
             'initial_metrics': {
                 'r2': initial_r2,
+                'explained_variance': initial_explained_variance,
+                'mae': initial_mae,
+                'mse': initial_mse,
                 'rmse': initial_rmse,
-                'mae': initial_mae
+                'mape': initial_mape
             },
             'predictions': {
                 'initial': y_pred_initial

@@ -316,7 +316,6 @@ def plot_predictions_vs_actual(y_test, y_pred, model_name):
 
 
 def evaluate_model(model, X_test, y_test, features):
-    """Evaluate the model and display results"""
     # Make predictions
     y_pred = model.predict(X_test)
 
@@ -326,6 +325,7 @@ def evaluate_model(model, X_test, y_test, features):
     mae = mean_absolute_error(y_test, y_pred)
     mse = mean_squared_error(y_test, y_pred)
     rmse = np.sqrt(mse)
+    mape = np.mean(np.abs((y_test - y_pred) / y_test)) * 100
 
     print(f"\nLinear Regression Results:")
     print(f"R-Squared Value: {r2:.5f}")
@@ -333,21 +333,18 @@ def evaluate_model(model, X_test, y_test, features):
     print(f"Mean Absolute Error: {mae:.2f}")
     print(f"Mean Squared Error: {mse:.2f}")
     print(f"Root Mean Squared Error: {rmse:.2f}")
+    print(f"MAPE: {mape:.2f}%")
 
-    # Display feature importance
+    # (Optional) Display feature importance if available
     if hasattr(model, 'coef_'):
         coef = model.coef_
         importances = pd.DataFrame({
             'Feature': features,
             'Coefficient': coef,
             'Absolute Importance': np.abs(coef)
-        })
-        importances = importances.sort_values('Absolute Importance', ascending=False)
-
+        }).sort_values('Absolute Importance', ascending=False)
         print("\nFeature Importance:")
         print(importances)
-
-        # Plot feature importance
         plt.figure(figsize=(10, 6))
         plt.barh(importances['Feature'][:10], importances['Absolute Importance'][:10])
         plt.xlabel('Absolute Coefficient Value')
@@ -355,15 +352,16 @@ def evaluate_model(model, X_test, y_test, features):
         plt.tight_layout()
         plt.show()
 
-    # Visualize predicted vs actual values
+    # (Optional) Visualize predictions vs actual values
     plot_predictions_vs_actual(y_test, y_pred, "Linear Regression")
 
     return {
         'R2': r2,
-        'EVS': evs,
+        'Explained_Variance': evs,
         'MAE': mae,
         'MSE': mse,
         'RMSE': rmse,
+        'MAPE': mape,
         'predictions': y_pred
     }
 
@@ -417,7 +415,21 @@ def main():
     # Convert predictions back to original scale for interpretation
     y_test_original = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
     y_pred_original = target_scaler.inverse_transform(results['predictions'].reshape(-1, 1)).flatten()
+    # Transform predictions and true values back to original scale
 
+    # Compute metrics on original scale
+    r2_orig = r2_score(y_test_original, y_pred_original)
+    mae_orig = mean_absolute_error(y_test_original, y_pred_original)
+    mse_orig = mean_squared_error(y_test_original, y_pred_original)
+    rmse_orig = np.sqrt(mse_orig)
+    mape_orig = np.mean(np.abs((y_test_original - y_pred_original) / y_test_original)) * 100
+
+    print("Metrics on Original Scale:")
+    print(f"R²: {r2_orig:.5f}")
+    print(f"MAE: {mae_orig:.2f}")
+    print(f"MSE: {mse_orig:.2f}")
+    print(f"RMSE: {rmse_orig:.2f}")
+    print(f"EVS: {explained_variance_score(y_test_original, y_pred_original):.5f}")
     # Plot original scale predictions
     plt.figure(figsize=(12, 6))
     plt.plot(y_test_original, label='Actual')

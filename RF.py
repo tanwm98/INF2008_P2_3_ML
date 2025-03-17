@@ -4,9 +4,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler, RobustScaler
+from skopt import BayesSearchCV
+from skopt.space import Integer, Real
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, explained_variance_score
 from sklearn.ensemble import RandomForestRegressor
-import xgboost as xgb
+from xgboost import XGBRegressor
 import random
 
 random.seed(42)
@@ -26,6 +28,13 @@ def load_data(file_path):
     df.dropna(inplace=True)
     return df
 
+def calculate_rsi(data, periods=14):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=periods).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=periods).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 #######################################
 # Enhanced Feature Engineering
@@ -33,80 +42,56 @@ def load_data(file_path):
 def enhanced_feature_engineering(df):
     """Enhanced feature engineering addressing the identified issues"""
     result = df.copy()
-
-    # 1. Log transform price levels for better statistical properties
-    for col in ['Gold', 'Silver', 'Crude Oil', 'DXY', 'S&P500']:
-        if col in result.columns:
-            result[f'{col}_Log'] = np.log(result[col])
-
-    # 2. Add trend features to capture directionality
-    result['Time_Index'] = np.arange(len(result))
-    result['Time_Index_Scaled'] = result['Time_Index'] / len(result)
-
-    # 3. External predictors
-    external_cols = ['Silver', 'DXY', 'Crude Oil', 'rates', 'cpi', 'S&P500']
-
-    for col in external_cols:
-        if col in result.columns:
-            # Return-based features (better statistical properties than changes)
-            for period in [1, 5, 10, 20]:
-                result[f'{col}_Return_{period}d'] = result[col].pct_change(periods=period)
-
-            # Volatility indicators
-            for window in [10, 20, 30]:
-                result[f'{col}_Volatility_{window}d'] = result[col].pct_change().rolling(window=window).std()
-
-            # Momentum indicators
-            for period in [10, 20, 50]:
-                result[f'{col}_Momentum_{period}d'] = (
-                                                              result[col] - result[col].shift(period)
-                                                      ) / result[col].shift(period)
-
-    # 4. Important economic indicators
-    if 'rates' in result.columns and 'cpi' in result.columns:
+    
+    # Technical indicators for Gold
+    if 'Gold' in result.columns:
+        # RSI with different periods
+        result['RSI_14'] = calculate_rsi(result['Gold'], periods=14)
+        result['RSI_21'] = calculate_rsi(result['Gold'], periods=21)
+        
+        # Moving averages and ratios
+        for window in [5, 10, 20, 30]:
+            result[f'Gold_MA_{window}'] = result['Gold'].rolling(window=window).mean()
+            result[f'Gold_MA_Ratio_{window}'] = result['Gold'] / result[f'Gold_MA_{window}']
+        
+        # Volatility indicators
+        result['Gold_Volatility_20'] = result['Gold'].rolling(window=20).std()
+        result['Gold_Volatility_30'] = result['Gold'].rolling(window=30).std()
+        
+        # Price momentum
+        for period in [5, 10, 20]:
+            result[f'Gold_ROC_{period}'] = result['Gold'].pct_change(period)
+    
+    # Market indicators
+    if 'DXY' in result.columns:
+        result['DXY_MA_10'] = result['DXY'].rolling(window=10).mean()
+        result['DXY_MA_20'] = result['DXY'].rolling(window=20).mean()
+        result['DXY_ROC_10'] = result['DXY'].pct_change(10)
+        result['DXY_ROC_20'] = result['DXY'].pct_change(20)
+        
+    if 'Crude Oil' in result.columns:
+        result['Oil_MA_10'] = result['Crude Oil'].rolling(window=10).mean()
+        result['Oil_MA_20'] = result['Crude Oil'].rolling(window=20).mean()
+        result['Oil_ROC_10'] = result['Crude Oil'].pct_change(10)
+        result['Oil_ROC_20'] = result['Crude Oil'].pct_change(20)
+    
+    # Economic indicators
+    if all(col in result.columns for col in ['rates', 'cpi']):
         result['Real_Rate'] = result['rates'] - result['cpi']
         result['Real_Rate_Change'] = result['Real_Rate'].diff()
-        # Add non-linear transformations for real rates
-        result['Real_Rate_Squared'] = result['Real_Rate'] ** 2
-
-    # 5. Market regime indicators
-    if 'S&P500' in result.columns:
-        # Bull/bear market indicator
-        result['Market_Trend'] = result['S&P500'].pct_change(20).apply(
-            lambda x: 1 if x > 0 else (-1 if x < 0 else 0)
-        )
-
-    # 6. Cross-asset relationships (avoiding using Gold in calculations)
-    if 'Silver' in result.columns and 'DXY' in result.columns:
-        result['Silver_DXY_Ratio'] = result['Silver'] / result['DXY']
-        result['Silver_DXY_Ratio_Change'] = result['Silver_DXY_Ratio'].pct_change()
-
-    if 'Silver' in result.columns and 'Crude Oil' in result.columns:
-        result['Silver_Oil_Ratio'] = result['Silver'] / result['Crude Oil']
-        result['Silver_Oil_Ratio_Change'] = result['Silver_Oil_Ratio'].pct_change()
-
-    # 7. Seasonality (avoid using explicit year to prevent capturing a simple trend)
-    result['Month'] = result['Date'].dt.month
-    result['Quarter'] = result['Date'].dt.quarter
-    # Convert to cyclical features
-    result['Month_Sin'] = np.sin(2 * np.pi * result['Month'] / 12)
-    result['Month_Cos'] = np.cos(2 * np.pi * result['Month'] / 12)
-
-    # 8. Calendar effects for financial markets
-    result['Day_Of_Week'] = result['Date'].dt.dayofweek
-
-    # Remove columns with NaN values
-    result.dropna(inplace=True)
-
+        result['CPI_Change'] = result['cpi'].pct_change()
+    
+    # Handle missing values
+    result = result.fillna(method='ffill').fillna(method='bfill')
+    
     return result
-
 
 #######################################
 # Bias-Corrected Prediction with Recalibration
 #######################################
 class GoldPricePredictor:
     def __init__(self, recalibration_window=20, use_log_transform=True):
-        self.rf_model = None
+        self.xgb_model = None
         self.feature_scaler = None
         self.target_scaler = None
         self.features = None
@@ -116,8 +101,12 @@ class GoldPricePredictor:
         self.bias_history = []
 
     def fit(self, X_train, y_train, features):
-        """Fit the model on training data"""
+        """Fit the model using Bayesian Optimization"""
         self.features = features
+
+        print("\nFeatures used for training:")
+        for feature in self.features:
+            print(f"- {feature}")
 
         # Apply log transformation if enabled
         if self.use_log_transform:
@@ -131,32 +120,55 @@ class GoldPricePredictor:
         self.target_scaler = StandardScaler()
         y_train_scaled = self.target_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
 
-        # Define model with optimal parameters
-        self.rf_model = xgb.XGBRegressor(
-            n_estimators=200,
-            max_depth=15,
-            min_samples_split=20,
-            min_samples_leaf=10,
-            max_features=0.7,
-            bootstrap=True,
+        # Define Bayesian search space for XGBoost
+        search_space = {
+            'n_estimators': Integer(50, 300),       # Number of trees
+            'max_depth': Integer(3, 15),            # Depth of trees
+            'learning_rate': Real(0.01, 0.3, 'log-uniform'),  # Learning rate (log scale for better optimization)
+            'subsample': Real(0.6, 1.0),            # Row sampling
+            'colsample_bytree': Real(0.6, 1.0),     # Feature sampling
+            'reg_alpha': Real(0, 10.0),             # L1 Regularization
+            'reg_lambda': Real(0, 10.0),            # L2 Regularization
+        }
+
+        # Initialize XGBoost model
+        xgb_model = XGBRegressor(
+            objective='reg:squarederror',
             random_state=42,
             n_jobs=-1
         )
 
-        # Fit model
-        self.rf_model.fit(X_train_scaled, y_train_scaled)
+        # Bayesian Optimization using BayesSearchCV
+        opt = BayesSearchCV(
+            estimator=xgb_model,
+            search_spaces=search_space,
+            n_iter=20,   # Number of parameter combinations to try
+            cv=3,        # Cross-validation folds
+            n_jobs=-1,   # Use all CPUs
+            random_state=42,
+            verbose=2
+        )
 
-        # Calculate initial bias on training data
+        # Fit the model with optimized hyperparameters
+        opt.fit(X_train_scaled, y_train_scaled)
+
+        # Save the best model
+        self.xgb_model = opt.best_estimator_
+        print(f"\nBest Bayesian Optimized Parameters: {opt.best_params_}")
+
+        self.print_feature_importance()
+
+        # Calculate initial bias correction
         y_train_pred = self.predict_without_correction(X_train)
         self.bias_correction = np.mean(y_train - y_train_pred)
         print(f"Initial bias correction: {self.bias_correction:.4f}")
 
-        return self
+        return self.xgb_model
 
     def predict_without_correction(self, X):
         """Make predictions without bias correction"""
         X_scaled = self.feature_scaler.transform(X)
-        y_pred_scaled = self.rf_model.predict(X_scaled)
+        y_pred_scaled = self.xgb_model.predict(X_scaled)
         y_pred = self.target_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
 
         # Inverse log transform if enabled
@@ -164,6 +176,29 @@ class GoldPricePredictor:
             y_pred = np.exp(y_pred)
 
         return y_pred
+    
+    def print_feature_importance(self, top_n=15):
+        """Prints and plots the feature importance from the trained model"""
+        if self.xgb_model is None:
+            print("Model not trained yet!")
+            return
+
+        feature_importance = pd.DataFrame({
+            'Feature': self.features,
+            'Importance': self.xgb_model.feature_importances_
+        }).sort_values(by='Importance', ascending=False)
+
+        print("\nFeature Importances:")
+        for i, row in feature_importance.iterrows():
+            print(f"{row['Feature']}: {row['Importance']:.5f}")
+
+        # Plot feature importance
+        plt.figure(figsize=(12, 6))
+        sns.barplot(y=feature_importance['Feature'][:top_n], x=feature_importance['Importance'][:top_n], orient='h')
+        plt.xlabel("Importance")
+        plt.ylabel("Feature")
+        plt.title("Top Feature Importances")
+        plt.show()
 
     def predict(self, X, recalibrate=False, actual_values=None):
         """Make predictions with bias correction"""
@@ -280,11 +315,11 @@ class GoldPricePredictor:
 
     def plot_feature_importance(self, n=15):
         """Plot feature importances from the model"""
-        if self.rf_model is None or self.features is None:
+        if self.xgb_model is None or self.features is None:
             print("Model not trained yet!")
             return
 
-        importances = self.rf_model.feature_importances_
+        importances = self.xgb_model.feature_importances_
         feature_importance = pd.DataFrame({
             'Feature': self.features,
             'Importance': importances
@@ -303,7 +338,7 @@ class GoldPricePredictor:
         return feature_importance
 
 #######################################
-def plot_predictions_vs_actual(y_test, y_pred, model_name="RF Model"):
+def plot_predictions_vs_actual(y_test, y_pred, model_name="XGBoost Model"):
     plt.figure(figsize=(10, 6))
     plt.scatter(y_test, y_pred, alpha=0.5)
     # Plot the diagonal line for reference
@@ -339,8 +374,8 @@ def main():
     test_df = processed_df.iloc[val_cutoff:].copy()
 
     # Remove features that directly contain Gold or are time-based leakage
-    leakage_features = ['Gold', 'Gold_Log', 'Date', 'Time_Index']
-    features = [col for col in train_df.columns if col not in leakage_features]
+    leakage_features = ['Date', 'Gold', 'Silver', 'S&P500'] 
+    features = [col for col in train_df.columns if col not in leakage_features and not col.startswith('Unnamed')]
 
     print(f"\nUsing {len(features)} features for prediction")
 

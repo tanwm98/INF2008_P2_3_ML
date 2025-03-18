@@ -359,7 +359,7 @@ def evaluate_nn(y_train, y_train_pred, y_test, y_test_pred):
 #######################################
 def main():
     print("Loading data...")
-    df = load_data('drive/MyDrive/Colab Notebooks/combined_dataset.csv')
+    df = load_data('../dataset/combined_dataset.csv')
     print(f"\nDataset shape: {df.shape}")
     print("\nPreparing data for modeling with train/validation/test split...")
     train_dataset, val_dataset, test_dataset, feature_scaler, target_scaler, features = prepare_data(

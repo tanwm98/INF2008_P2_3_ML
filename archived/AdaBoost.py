@@ -515,7 +515,7 @@ def train_adaboost_final(df, cv_results):
 # Main function
 def main():
     print("Loading data...")
-    df = load_data('dataset/combined_dataset.csv')
+    df = load_data('../dataset/combined_dataset.csv')
     print(f"\nDataset shape: {df.shape}")
 
     print("\nGenerating correlation heatmap...")

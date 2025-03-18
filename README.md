@@ -107,9 +107,8 @@ All models demonstrate reasonable predictive performance, with the XGBoost model
 
 - Implement ensemble techniques to combine predictions from multiple models
 - Explore deep learning models like LSTM for better time-series modeling
-- Add macroeconomic indicators such as GDP growth and geopolitical risk indices
+- Add macroeconomic indicators such as LSE/EURO STOXX 50 and geopolitical risk indices
 - Create a web-based dashboard for real-time predictions
-- Deploy the model as an API service
 
 ---
 

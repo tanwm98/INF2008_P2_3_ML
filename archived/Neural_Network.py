@@ -206,7 +206,7 @@ def evaluate_model(model, test_dataset, train_losses, test_losses, target_scaler
 def main():
     # Load data
     print("Loading data...")
-    df = load_data('dataset/combined_dataset.csv')
+    df = load_data('../dataset/combined_dataset.csv')
     print(f"\nDataset shape: {df.shape}")
 
     # Correlation heatmap
